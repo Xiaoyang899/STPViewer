@@ -7,6 +7,9 @@
 #include "appearance_state.h"
 #include <QPointer>
 #include <optional>
+#include "color_edits.h"
+#include "customer_envelope.h"
+#include <QUndoStack>
 
 class QAction; class QCheckBox; class QComboBox; class QLabel; class QLineEdit;
 class QProgressBar; class QPushButton; class QSlider; class QTableWidget; class QTableWidgetItem;
@@ -19,6 +22,8 @@ namespace Stp {
 class ViewerWidget;
 class CadJobQueue;
 class MeasurementPanel;
+class PartTransformPanel;
+class SectionPanel;
 class MainWindow final : public QMainWindow {
     Q_OBJECT
 public:
@@ -37,14 +42,21 @@ public:
     quint64 sessionId() const { return m_owner; }
     std::shared_ptr<CadDocument> document() const { return m_document; }
     QMenu* documentViewMenu() const;
+    QMenu* documentProcessingMenu() const;
     QMenu* documentHelpMenu() const;
     int appearanceUndoCount() const { return int(m_appearanceHistory.size()); }
+    bool hasPlacementChanges() const;
+    bool confirmPlacementClose();
     void undoAppearance();
     void resetAppearance();
+    bool setPartColors(const std::vector<int>& occurrences, const QColor& color);
+    bool restorePartColors(const std::vector<int>& occurrences);
+    const ColorEdits& colorEdits() const { return m_colors; }
 signals:
     void openFilesRequested(const QStringList& paths);
     void stateChanged();
     void closeReady();
+    void closeAfterSaveRequested();
 protected:
     void dragEnterEvent(QDragEnterEvent*) override;
     void dropEvent(QDropEvent*) override;
@@ -58,11 +70,28 @@ private:
     void chooseFile();
     void saveBom();
     void saveParts();
+    void saveAssembly(bool closeAfter = false);
+    void openCustomerEnvelope();
+    EnvelopeOptions m_envelopeOptions;
+    QAction* m_envelopeAction = nullptr;
+    void openPlacementPanel();
+    void updatePlacementActions();
+    PartTransformPanel* m_transformPanel = nullptr;
+    QAction *m_transformAction = nullptr, *m_saveAssemblyAction = nullptr;
+    bool m_placementSceneReady = false;
     void runTask(const QString& title, std::function<void(std::atomic_bool&,const ProgressCallback&)> work,
                  std::function<void(const QString&)> done);
     void setBusy(bool busy, const QString& label = {});
     void diagnostic(const QString& text);
     void updateSection();
+    void choosePartColor();
+    void commitColors(const ColorEdits&, const QString&);
+    void updateColorActions();
+    SectionPanel* m_sectionPanel = nullptr;
+    ColorEdits m_colors, m_savedColors;
+    QUndoStack m_colorHistory;
+    QAction *m_colorAction = nullptr, *m_restoreColorAction = nullptr, *m_sectionAction = nullptr;
+    QAction *m_undoColorAction = nullptr, *m_redoColorAction = nullptr;
     void filterTree(const QString& text);
     void startSmokeCapture(qint64 loadMs);
     void setBomPageVisible(bool visible);
@@ -81,9 +110,9 @@ private:
     void showPartAppearanceMenu(int occurrence, const QPoint& globalPosition);
     void dismissAppearanceMenu();
     void clearAppearanceForNewDocument();
+    MeasurementPanel* m_measurementPanel = nullptr;
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
     void updatePartGrabState();
-    MeasurementPanel* m_measurementPanel = nullptr;
     QAction* m_measurementAction = nullptr;
     bool m_measurementSmokeStarted = false;
 #endif

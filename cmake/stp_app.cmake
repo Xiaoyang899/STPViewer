@@ -13,11 +13,12 @@ endif()
 
 add_library(stp_core STATIC
     src/stp/cad_document.cpp src/stp/bom_export.cpp src/stp/part_export.cpp src/stp/pmi.cpp
-    src/stp/measurement.cpp)
+    src/stp/measurement.cpp src/stp/part_placement.cpp src/stp/assembly_export.cpp
+    src/stp/color_edits.cpp src/stp/section_state.cpp src/stp/customer_envelope.cpp src/stp/envelope_input.cpp)
 target_include_directories(stp_core PUBLIC src src/stp "${OpenCASCADE_INCLUDE_DIR}")
 target_link_libraries(stp_core PUBLIC Qt6::Core Qt6::Gui STP::xlsxwriter
     TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKPrim TKMesh
-    TKShHealing TKService TKV3d TKOpenGl TKCDF TKLCAF TKCAF TKVCAF TKXCAF TKXSBase TKDESTEP)
+    TKShHealing TKBO TKBool TKService TKV3d TKOpenGl TKCDF TKLCAF TKCAF TKVCAF TKXCAF TKXSBase TKDESTEP)
 target_compile_features(stp_core PUBLIC cxx_std_17)
 if(MSVC)
     target_compile_options(stp_core PUBLIC /utf-8)
@@ -25,6 +26,9 @@ if(MSVC)
 endif()
 
 add_library(stp_view STATIC
+    src/stp/envelope_dialog.cpp src/stp/envelope_dialog.h
+    src/stp/part_transform_panel.cpp src/stp/part_transform_panel.h
+    src/stp/section_panel.cpp src/stp/section_panel.h
     src/stp/viewer_widget.cpp src/stp/viewer_widget.h
     src/stp/measurement_panel.cpp src/stp/measurement_panel.h
     src/stp/cad_job_queue.cpp src/stp/cad_job_queue.h
@@ -68,6 +72,34 @@ if(WIN32)
 endif()
 if(STP_BUILD_TESTS)
     enable_testing()
+    add_executable(stp_envelope_tests tests/stp_envelope_tests.cpp)
+    target_link_libraries(stp_envelope_tests PRIVATE stp_core)
+    add_test(NAME stp_envelope_tests COMMAND stp_envelope_tests)
+    add_executable(stp_envelope_integration_tests EXCLUDE_FROM_ALL
+        tests/stp_envelope_integration_tests.cpp src/stp/main_window.cpp src/stp/main_window.h
+        src/stp/document_workspace.cpp src/stp/document_workspace.h resources/stp_grab_icons.qrc)
+    target_link_libraries(stp_envelope_integration_tests PRIVATE stp_view Qt6::Test)
+    target_include_directories(stp_envelope_integration_tests PRIVATE src "${CMAKE_BINARY_DIR}")
+    target_compile_definitions(stp_envelope_integration_tests PRIVATE STP_OCCT_RESOURCE_DIR="${STP_DEPS_PREFIX}/share/opencascade/resources")
+    set_target_properties(stp_envelope_integration_tests PROPERTIES AUTOMOC ON AUTORCC ON)
+    add_executable(stp_section_color_tests tests/stp_section_color_tests.cpp)
+    target_link_libraries(stp_section_color_tests PRIVATE stp_core)
+    add_test(NAME stp_section_color_tests COMMAND stp_section_color_tests)
+    add_executable(stp_section_color_integration_tests EXCLUDE_FROM_ALL
+        tests/stp_section_color_integration_tests.cpp src/stp/main_window.cpp src/stp/main_window.h
+        src/stp/document_workspace.cpp src/stp/document_workspace.h resources/stp_grab_icons.qrc)
+    target_link_libraries(stp_section_color_integration_tests PRIVATE stp_view Qt6::Test)
+    target_include_directories(stp_section_color_integration_tests PRIVATE src "${CMAKE_BINARY_DIR}")
+    target_compile_definitions(stp_section_color_integration_tests PRIVATE STP_OCCT_RESOURCE_DIR="${STP_DEPS_PREFIX}/share/opencascade/resources")
+    set_target_properties(stp_section_color_integration_tests PROPERTIES AUTOMOC ON AUTORCC ON)
+
+    add_executable(stp_placement_tests tests/stp_placement_tests.cpp)
+    target_link_libraries(stp_placement_tests PRIVATE stp_core)
+    add_test(NAME stp_placement_tests COMMAND stp_placement_tests)
+    add_executable(stp_transform_panel_tests tests/stp_transform_panel_tests.cpp)
+    target_link_libraries(stp_transform_panel_tests PRIVATE stp_view)
+    add_test(NAME stp_transform_panel_tests COMMAND stp_transform_panel_tests)
+    set_tests_properties(stp_transform_panel_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(stp_core_tests tests/stp_core_tests.cpp)
     target_link_libraries(stp_core_tests PRIVATE stp_core)
     add_test(NAME stp_core_tests COMMAND stp_core_tests)
@@ -80,6 +112,17 @@ if(STP_BUILD_TESTS)
     set_tests_properties(stp_pmi_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # Requires an interactive desktop and a working OpenGL driver. Build on demand;
     # headless CTest continues to exercise the CAD/data services independently.
+    add_executable(stp_editing_integration_tests EXCLUDE_FROM_ALL
+        tests/stp_editing_integration_tests.cpp src/stp/main_window.cpp src/stp/main_window.h
+        src/stp/document_workspace.cpp src/stp/document_workspace.h)
+    target_link_libraries(stp_editing_integration_tests PRIVATE stp_view Qt6::Test)
+    target_include_directories(stp_editing_integration_tests PRIVATE src "${CMAKE_BINARY_DIR}")
+    target_compile_definitions(stp_editing_integration_tests PRIVATE STP_OCCT_RESOURCE_DIR="${STP_DEPS_PREFIX}/share/opencascade/resources")
+    set_target_properties(stp_editing_integration_tests PROPERTIES AUTOMOC ON)
+    if(APPLE OR WIN32)
+        target_sources(stp_editing_integration_tests PRIVATE resources/stp_grab_icons.qrc)
+        set_target_properties(stp_editing_integration_tests PROPERTIES AUTORCC ON)
+    endif()
     add_executable(stp_viewer_tests EXCLUDE_FROM_ALL tests/stp_viewer_tests.cpp)
     target_link_libraries(stp_viewer_tests PRIVATE stp_view Qt6::Test)
     target_compile_definitions(stp_viewer_tests PRIVATE
