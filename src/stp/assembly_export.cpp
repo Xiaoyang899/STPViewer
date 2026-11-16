@@ -18,6 +18,8 @@
 #include <XCAFDoc_MaterialTool.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <ostream>
@@ -57,9 +59,11 @@ Handle(TDocStd_Document) buildPlacedAssembly(const CadDocument& doc,const Placem
     const auto dst=XCAFDoc_DocumentTool::ShapeTool(target->Main());
     TDF_LabelDataMap labels;
     std::vector<TDF_Label> parts(doc.parts.size());
+    std::map<int,std::map<int,QColor>> faceEdits;
+    for(const auto& [key,color]:colors.faces)faceEdits[key.occurrence][key.face]=color;
     std::vector<bool> needsOriginal(doc.parts.size(),false);
     for(size_t i=0;i<doc.occurrences.size();++i){const auto& o=doc.occurrences[i];
-        if(o.partIndex>=0&&!colors.count(int(i)))needsOriginal.at(o.partIndex)=true;}
+        if(o.partIndex>=0&&!colors.count(int(i))&&!faceEdits.count(int(i)))needsOriginal.at(o.partIndex)=true;}
     for(size_t i=0;i<doc.parts.size();++i) {
         const auto& part=doc.parts[i];
         check(cancel);
@@ -86,28 +90,41 @@ Handle(TDocStd_Document) buildPlacedAssembly(const CadDocument& doc,const Placem
         const Quantity_Color rgb(c.redF(),c.greenF(),c.blueF(),Quantity_TOC_sRGB);
         for(auto type:{XCAFDoc_ColorGen,XCAFDoc_ColorSurf,XCAFDoc_ColorCurv}) colorTool->SetColor(label,rgb,type);
     };
-    const auto coloredPart=[&](int index,const QColor& color){
+    std::map<QString,TDF_Label> styledDefinitions;
+    const auto coloredPart=[&](int index,const QColor* color,const std::map<int,QColor>& faces){
+        QString signature=QString::number(index)+QLatin1Char(':')+(color?color->name(QColor::HexArgb):QStringLiteral("source"));
+        for(const auto& [face,c]:faces)signature+=QStringLiteral("/%1=%2").arg(face).arg(c.name(QColor::HexArgb));
+        if(const auto found=styledDefinitions.find(signature);found!=styledDefinitions.end())return found->second;
         const auto& part=doc.parts.at(index);
         // New topology prevents ShapeTool deduplication and color leakage to siblings.
         // Underlying exact surfaces/curves are shared; no tessellation or Boolean cut.
         BRepBuilderAPI_Copy copy(part.shape,false,false);
         const auto label=dst->NewShape();dst->SetShape(label,copy.Shape());
-        XCAFDoc_Editor::CloneMetaData(part.label,label,&materials,false,true,true,false);
+        XCAFDoc_Editor::CloneMetaData(part.label,label,&materials,!color,true,true,!color);
         TDF_LabelSequence subs;src->GetSubShapes(part.label,subs);
         for(int i=1;i<=subs.Length();++i){
             const auto shape=copy.ModifiedShape(src->GetShape(subs(i)));
             if(shape.IsNull())continue;
             const auto sub=dst->AddSubShape(label,shape);
             if(sub.IsNull())continue;
-            XCAFDoc_Editor::CloneMetaData(subs(i),sub,&materials,false,true,true,false);
-            applyColor(sub,color);
+            XCAFDoc_Editor::CloneMetaData(subs(i),sub,&materials,!color,true,true,!color);
+            if(color)applyColor(sub,*color);
         }
         if(!part.material.isEmpty()||part.densityKgM3)
             XCAFDoc_DocumentTool::MaterialTool(target->Main())->SetMaterial(label,
                 new TCollection_HAsciiString(part.material.toUtf8().constData()),new TCollection_HAsciiString(""),
                 part.densityKgM3?*part.densityKgM3/1000.:0.,new TCollection_HAsciiString("density"),
                 new TCollection_HAsciiString("NUMERIC_MEASURE"));
-        applyColor(label,color);return label;
+        if(color)applyColor(label,*color);
+        TopTools_IndexedMapOfShape sourceFaces;TopExp::MapShapes(part.shape,TopAbs_FACE,sourceFaces);
+        for(const auto& [number,c]:faces){
+            const auto mapped=copy.ModifiedShape(sourceFaces(number));
+            if(mapped.IsNull())throw std::runtime_error("无法映射所选面颜色，已停止另存");
+            const auto sub=dst->AddSubShape(label,mapped);
+            if(sub.IsNull())throw std::runtime_error("无法创建所选面颜色，已停止另存");
+            applyColor(sub,c);
+        }
+        styledDefinitions.emplace(signature,label);return label;
     };
     auto newAssembly=[&](){TopoDS_Compound shape;BRep_Builder().MakeCompound(shape);return dst->AddShape(shape,false);};
     const auto root=newAssembly();nameLabel(root,QFileInfo(doc.sourcePath).completeBaseName()+QStringLiteral("_edited"));
@@ -116,8 +133,9 @@ Handle(TDocStd_Document) buildPlacedAssembly(const CadDocument& doc,const Placem
         // Every assembly occurrence gets its own definition. Shared leaf definitions remain shared.
         // This prevents changing a nested part in one repeated subassembly from moving its siblings.
         const auto color=colors.find(index);
+        const auto face=faceEdits.find(index);const std::map<int,QColor> noFaces;
         const auto definition=o.partIndex>=0
-            ?(color!=colors.end()?coloredPart(o.partIndex,color->second):parts.at(o.partIndex)):newAssembly();
+            ?(color!=colors.end()||face!=faceEdits.end()?coloredPart(o.partIndex,color==colors.end()?nullptr:&color->second,face==faceEdits.end()?noFaces:face->second):parts.at(o.partIndex)):newAssembly();
         if(o.partIndex<0)XCAFDoc_Editor::CloneMetaData(o.definitionLabel,definition,&materials);
         const gp_Trsf parentWorld=o.parent<0?gp_Trsf():doc.occurrences.at(o.parent).worldTransform;
         const gp_Trsf local=parentWorld.Inverted()*placedWorldTransform(doc,edits,index);

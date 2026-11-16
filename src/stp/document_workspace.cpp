@@ -2,6 +2,9 @@
 #include "cad_job_queue.h"
 #include "main_window.h"
 #include "author_signature.h"
+#ifdef Q_OS_MACOS
+#include "mac_fullscreen_observer.h"
+#endif
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
@@ -11,6 +14,7 @@
 #include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QLabel>
+#include <QKeyEvent>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
@@ -95,7 +99,6 @@ DocumentWorkspace::DocumentWorkspace(QWidget* parent) : QMainWindow(parent)
     m_bom->setObjectName("workspaceExportBom");m_parts->setObjectName("workspaceExportParts");
     file->addSeparator();auto quit=file->addAction(QStringLiteral("退出"),this,&QWidget::close);quit->setShortcut(QKeySequence::Quit);quit->setMenuRole(QAction::QuitRole);
     m_viewMenu=m_nativeMenu->addMenu(QStringLiteral("视图"));
-    m_processingMenu=m_nativeMenu->addMenu(QStringLiteral("模型处理"));
     m_helpMenu=m_nativeMenu->addMenu(QStringLiteral("帮助"));
     for(auto action:{m_open,m_closeCurrent,m_closeAll,m_bom,m_parts,m_assembly,quit}){
         action->setParent(this);addAction(action);
@@ -115,12 +118,153 @@ DocumentWorkspace::DocumentWorkspace(QWidget* parent) : QMainWindow(parent)
     move(available.center()-QPoint(width()/2,height()/2));updateActions();
 }
 
-DocumentWorkspace::~DocumentWorkspace() { delete m_nativeMenu; }
+DocumentWorkspace::~DocumentWorkspace() {
+    qApp->removeEventFilter(this);
+#ifdef Q_OS_MACOS
+    delete m_nativeFullscreenObserver;
+#endif
+    delete m_nativeMenu;
+}
 
 int DocumentWorkspace::documentCount() const { return m_tabs->count(); }
 MainWindow* DocumentWorkspace::currentDocument() const { return qobject_cast<MainWindow*>(m_tabs->currentWidget()); }
 
+bool DocumentWorkspace::isViewportFullscreenTransitioning() const
+{
+    return m_fullscreenChanging||m_restoreWindowPending
+#ifdef Q_OS_MACOS
+        ||m_nativeFullscreenTransition
+#endif
+        ;
+}
+
+void DocumentWorkspace::toggleViewportFullscreen()
+{
+    if (m_fullscreenChanging) return;
+    if (isViewportFullscreen()) { exitViewportFullscreen();return; }
+    if (m_restoreWindowPending) return;
+#ifdef Q_OS_MACOS
+    ensureNativeFullscreenObserver();
+    if (m_nativeFullscreenTransition) return;
+#endif
+    auto page = currentDocument();
+    if (!page || page->isBusy() || page->isClosing() || m_quitting) return;
+    m_fullscreenChanging = true;
+    m_fullscreenDocument = page;
+    m_fullscreenFocus = QApplication::focusWidget();
+    m_fullscreenGeometry = saveGeometry();
+    m_previousWindowState = windowState() & ~(Qt::WindowMinimized | Qt::WindowActive);
+    m_tabBarWasVisible = !m_tabs->tabBar()->isHidden();
+    m_cornerWasVisible = m_tabs->cornerWidget() && !m_tabs->cornerWidget()->isHidden();
+    m_menuWasVisible = !m_nativeMenu->isHidden();
+    m_statusWasVisible = !statusBar()->isHidden();
+    page->commitManualEditor();
+    page->setViewportOnly(true);
+    m_tabs->tabBar()->hide();
+    if (auto corner = m_tabs->cornerWidget()) corner->hide();
+    m_nativeMenu->hide();
+    statusBar()->hide();
+    // Keep the Qt OpenGL widget in its original window and parent hierarchy.
+    if(!isFullScreen()){
+#ifdef Q_OS_MACOS
+        if(m_nativeFullscreenObserver)m_nativeFullscreenTransition=true;
+#endif
+        showFullScreen();
+    }
+    m_fullscreenChanging = false;
+    emit viewportFullscreenChanged(true);
+}
+
+void DocumentWorkspace::exitViewportFullscreen()
+{
+    if (!isViewportFullscreen() || m_fullscreenChanging) return;
+    m_fullscreenChanging = true;
+    const auto page = m_fullscreenDocument;
+    m_fullscreenDocument.clear();
+    m_restoreWindowPending = true;
+    m_tabs->tabBar()->setVisible(m_tabBarWasVisible);
+    if (auto corner = m_tabs->cornerWidget()) corner->setVisible(m_cornerWasVisible);
+    m_nativeMenu->setVisible(m_menuWasVisible);
+    statusBar()->setVisible(m_statusWasVisible);
+    // Cocoa's native transition finishes after the Qt state flag changes.
+    // Restore the controls immediately for a requested panel operation, but do
+    // not zoom/re-enter the native window until DidExitFullScreen is delivered.
+#ifdef Q_OS_MACOS
+    if(m_nativeFullscreenObserver&&!m_previousWindowState.testFlag(Qt::WindowFullScreen)){
+        if(!m_nativeFullscreenTransition){
+            if(m_nativeFullscreenActive||isFullScreen()){
+                m_nativeFullscreenTransition=true;showNormal();
+            }else finishViewportWindowRestore();
+        }
+    }else finishViewportWindowRestore();
+#else
+    finishViewportWindowRestore();
+#endif
+    if(page)page->setViewportOnly(false);
+    const auto focus = m_fullscreenFocus;
+    m_fullscreenFocus.clear();
+    if (focus) QTimer::singleShot(0, this, [focus] {
+        if (focus && focus->isVisible() && focus->isEnabled()) focus->setFocus(Qt::OtherFocusReason);
+    });
+    m_fullscreenChanging = false;
+    emit viewportFullscreenChanged(false);
+}
+
+void DocumentWorkspace::finishViewportWindowRestore()
+{
+    if(!m_restoreWindowPending)return;
+    m_restoreWindowPending=false;
+    const bool shouldShow=isVisible()&&!m_quitting;
+    restoreGeometry(m_fullscreenGeometry);
+    setWindowState(m_previousWindowState);
+    if(shouldShow)show();
+}
+
+#ifdef Q_OS_MACOS
+void DocumentWorkspace::ensureNativeFullscreenObserver()
+{
+    if(m_nativeFullscreenObserver)return;
+    const QPointer<DocumentWorkspace> self(this);
+    m_nativeFullscreenObserver=observeNativeFullscreen(this,this,[self](NativeFullscreenPhase phase){
+        if(!self)return;
+        self->nativeFullscreenChanged(phase==NativeFullscreenPhase::WillEnter||phase==NativeFullscreenPhase::DidEnter,
+            phase==NativeFullscreenPhase::DidEnter||phase==NativeFullscreenPhase::DidExit);
+    });
+    m_nativeFullscreenActive=isFullScreen();
+}
+
+void DocumentWorkspace::nativeFullscreenChanged(bool active,bool completed)
+{
+    m_nativeFullscreenTransition=!completed;
+    if(!completed){
+        if(!active&&isViewportFullscreen()&&!m_restoreWindowPending){
+            // An explicit system fullscreen exit also exits viewport-only mode.
+            m_previousWindowState.setFlag(Qt::WindowFullScreen,false);
+            exitViewportFullscreen();
+        }
+        return;
+    }
+    m_nativeFullscreenActive=active;
+    if(m_restoreWindowPending){
+        if(active&&!m_previousWindowState.testFlag(Qt::WindowFullScreen)){
+            // An exit requested during entry is performed only after entry has
+            // completed. Never send concurrent native fullscreen/zoom requests.
+            QTimer::singleShot(0,this,[this]{
+                if(m_restoreWindowPending&&!m_nativeFullscreenTransition&&m_nativeFullscreenActive){
+                    m_nativeFullscreenTransition=true;showNormal();
+                }
+            });
+        }else QTimer::singleShot(0,this,[this]{
+            // Let Qt's own Cocoa delegate finish processing the same native
+            // notification before restoring maximized/windowed geometry.
+            if(m_restoreWindowPending&&!m_nativeFullscreenTransition)finishViewportWindowRestore();
+        });
+    }
+}
+#endif
+
 void DocumentWorkspace::chooseFiles() {
+    exitViewportFullscreen();
     const auto paths=QFileDialog::getOpenFileNames(this,QStringLiteral("打开 STEP 文件"),{},QStringLiteral("STEP 文件 (*.stp *.step *.STP *.STEP)"));
     if(!paths.isEmpty())openFiles(paths);
 }
@@ -128,6 +272,7 @@ void DocumentWorkspace::chooseFiles() {
 void DocumentWorkspace::openFiles(const QStringList& paths)
 {
     if(m_quitting)return;
+    exitViewportFullscreen();
     if(auto current=currentDocument())current->commitManualEditor();
     QPointer<MainWindow> first;
     for(const auto& path:paths){
@@ -140,6 +285,10 @@ void DocumentWorkspace::openFiles(const QStringList& paths)
             catch(const std::exception& error){QMessageBox::warning(this,QStringLiteral("窗口创建失败"),QString::fromUtf8(error.what()));continue;}
             m_documents.insert(key,page);m_paths.insert(page,canonical);
             connect(page,&MainWindow::openFilesRequested,this,&DocumentWorkspace::openFiles);
+            connect(page,&MainWindow::viewportFullscreenRequested,this,[this,page]{
+                if(currentDocument()==page)toggleViewportFullscreen();
+            });
+            connect(page,&MainWindow::viewportPanelsRequested,this,&DocumentWorkspace::exitViewportFullscreen);
             connect(page,&MainWindow::stateChanged,this,[this,page]{if(currentDocument()==page)updateActions();updateLabels();});
             for(auto name:{"exportBom","exportParts","saveAssemblyStep"})connect(page->findChild<QAction*>(name),&QAction::changed,this,[this,page]{if(currentDocument()==page)updateActions();});
             connect(page,&MainWindow::closeAfterSaveRequested,this,[this,page]{closeDocument(page);});
@@ -157,22 +306,23 @@ void DocumentWorkspace::openFiles(const QStringList& paths)
 }
 
 void DocumentWorkspace::activateDocument(MainWindow* page) {
+    if(page!=m_fullscreenDocument)exitViewportFullscreen();
     if(auto current=currentDocument())current->commitManualEditor();
     m_pages->setCurrentWidget(m_tabs);m_tabs->setCurrentWidget(page);page->setFocus(Qt::OtherFocusReason);
 }
 
 void DocumentWorkspace::updateActiveDocument()
 {
+    if(m_fullscreenDocument&&m_fullscreenDocument!=currentDocument())exitViewportFullscreen();
     if(m_previous){
         m_previous->commitManualEditor();
         if(m_previous!=currentDocument())m_previous->cancelPendingMeasurementForSessionSwitch();
     }
     m_previous=currentDocument();
     m_pages->setCurrentIndex(documentCount()?1:0);
-    removeMenuActions(m_viewMenu);removeMenuActions(m_helpMenu);removeMenuActions(m_processingMenu);
+    removeMenuActions(m_viewMenu);removeMenuActions(m_helpMenu);
     if(auto doc=currentDocument()){
         for(auto action:doc->documentViewMenu()->actions())m_viewMenu->addAction(action);
-        for(auto action:doc->documentProcessingMenu()->actions())m_processingMenu->addAction(action);
         for(auto action:doc->documentHelpMenu()->actions())m_helpMenu->addAction(action);
         setWindowTitle(QFileInfo(m_paths.value(doc)).fileName()+QStringLiteral(" — STP Viewer"));
     }else setWindowTitle(QStringLiteral("STP Viewer · 离线工程查看器"));
@@ -182,13 +332,12 @@ void DocumentWorkspace::updateActiveDocument()
 void DocumentWorkspace::updateActions()
 {
     auto doc=currentDocument();m_open->setEnabled(!m_quitting);
-    statusBar()->setVisible(!doc||m_quitting);
+    statusBar()->setVisible(!isViewportFullscreen()&&(!doc||m_quitting));
     m_closeCurrent->setEnabled(doc&&!m_quitting);m_closeAll->setEnabled(documentCount()>0&&!m_quitting);
     m_bom->setEnabled(doc&&!m_quitting&&doc->findChild<QAction*>("exportBom")->isEnabled());
     m_parts->setEnabled(doc&&!m_quitting&&doc->findChild<QAction*>("exportParts")->isEnabled());
     m_assembly->setEnabled(doc&&!m_quitting&&doc->findChild<QAction*>("saveAssemblyStep")->isEnabled());
     m_viewMenu->setEnabled(doc&&!m_quitting);m_helpMenu->setEnabled(doc&&!m_quitting);
-    m_processingMenu->setEnabled(doc&&!m_quitting);
 }
 
 void DocumentWorkspace::updateLabels()
@@ -207,6 +356,7 @@ void DocumentWorkspace::closeAll() { while(m_tabs->count()){const int before=m_t
 void DocumentWorkspace::closeDocument(MainWindow* page)
 {
     if(!page)return;const int index=m_tabs->indexOf(page);if(index<0)return;
+    if(page==m_fullscreenDocument)exitViewportFullscreen();
     if(!page->confirmPlacementClose())return;
     if(auto current=currentDocument())current->commitManualEditor();
     m_documents.remove(documentKey(m_paths.take(page)));m_closing.insert(page);
@@ -216,6 +366,16 @@ void DocumentWorkspace::closeDocument(MainWindow* page)
 
 bool DocumentWorkspace::eventFilter(QObject* watched,QEvent* event)
 {
+    if(isViewportFullscreen()&&(event->type()==QEvent::KeyPress||event->type()==QEvent::ShortcutOverride)){
+        const auto key=static_cast<QKeyEvent*>(event);
+        const auto target=qobject_cast<QWidget*>(watched);
+        if(key->key()==Qt::Key_Escape&&target&&target->window()==this&&!QApplication::activeModalWidget()){
+            if(event->type()==QEvent::KeyPress&&!key->isAutoRepeat()){
+                if(!m_fullscreenDocument->cancelViewportPick())exitViewportFullscreen();
+            }
+            event->accept();return true;
+        }
+    }
     if(event->type()==QEvent::FileOpen){
         const auto file=static_cast<QFileOpenEvent*>(event);const auto path=file->file().isEmpty()?file->url().toLocalFile():file->file();
         if(isStep(path)){openFiles({path});show();raise();activateWindow();return true;}
@@ -229,9 +389,20 @@ void DocumentWorkspace::dropEvent(QDropEvent* event) { openFiles(droppedPaths(ev
 
 void DocumentWorkspace::closeEvent(QCloseEvent* event)
 {
+    exitViewportFullscreen();
     if(m_closing.isEmpty()&&documentCount()==0&&m_jobs->idle()){event->accept();return;}
     closeAll();if(documentCount()>0){event->ignore();return;}m_quitting=true;updateActions();statusBar()->showMessage(QStringLiteral("正在安全结束后台任务…"));
     event->ignore();finishQuit();
+}
+void DocumentWorkspace::changeEvent(QEvent* event)
+{
+    QMainWindow::changeEvent(event);
+    // Also restore the panels when the system's native fullscreen control exits.
+    if(event->type()==QEvent::WindowStateChange&&!m_fullscreenChanging
+#ifdef Q_OS_MACOS
+        &&!m_nativeFullscreenObserver
+#endif
+        &&isViewportFullscreen()&&!isFullScreen())exitViewportFullscreen();
 }
 void DocumentWorkspace::finishQuit()
 {

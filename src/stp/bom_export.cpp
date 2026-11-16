@@ -2,6 +2,7 @@
 #include <QSaveFile>
 #include <xlsxwriter.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <memory>
@@ -133,6 +134,89 @@ void writeDiagnostics(Workbook& workbook, const CadDocument& doc, const QStringL
     }
     checked(worksheet_set_column(sheet,1,1,110,nullptr));
 }
+
+QStringList writeHierarchy(Workbook& workbook, const CadDocument& doc, std::atomic_bool* cancel) {
+    auto* sheet=workbook.sheet("装配层级",{QStringLiteral("层级序号"),QStringLiteral("名称"),
+        QStringLiteral("类型"),QStringLiteral("本行数量"),QStringLiteral("实例 ID"),
+        QStringLiteral("父实例 ID"),QStringLiteral("层级"),QStringLiteral("定义 ID"),QStringLiteral("实例路径")});
+    worksheet_activate(sheet);
+    worksheet_freeze_panes(sheet,1,2);
+    // A parent is the summary row above its children, matching the application tree.
+    worksheet_outline_settings(sheet,LXW_TRUE,LXW_FALSE,LXW_TRUE,LXW_FALSE);
+    checked(worksheet_set_column(sheet,0,0,18,nullptr));
+    checked(worksheet_set_column(sheet,1,1,52,nullptr));
+    checked(worksheet_set_column(sheet,2,3,14,nullptr));
+    checked(worksheet_set_column(sheet,4,5,24,nullptr));
+    checked(worksheet_set_column(sheet,6,6,9,nullptr));
+    checked(worksheet_set_column(sheet,8,8,65,nullptr));
+
+    // Keep descendants contiguous even if a caller's occurrence vector is not
+    // already in preorder. Source sibling order and distinct instances are retained.
+    std::vector<std::vector<size_t>> children(doc.occurrences.size());
+    std::vector<size_t> roots;
+    for(size_t i=0;i<doc.occurrences.size();++i) {
+        checkCancel(cancel);
+        const int parent=doc.occurrences[i].parent;
+        if(parent<0) roots.push_back(i);
+        else if(size_t(parent)<doc.occurrences.size()&&size_t(parent)!=i) children[size_t(parent)].push_back(i);
+        else fail(QStringLiteral("装配层级包含无效父实例，未写入 Excel。"));
+    }
+    constexpr int maxOutlineDepth=7;
+    constexpr int maxIndent=15;
+    std::array<std::array<lxw_format*,maxIndent+1>,2> nameFormats {};
+    auto* assemblyFormat=workbook_add_format(workbook.book);
+    if(!assemblyFormat) fail(QStringLiteral("无法创建 Excel 格式"));
+    format_set_bold(assemblyFormat);
+    format_set_bg_color(assemblyFormat,0xEAF1F7);
+    const auto nameFormat=[&](int depth,bool assembly) {
+        auto*& format=nameFormats[assembly?1:0][std::min(depth,maxIndent)];
+        if(!format) {
+            format=workbook_add_format(workbook.book);
+            if(!format) fail(QStringLiteral("无法创建 Excel 格式"));
+            format_set_indent(format,uint8_t(std::min(depth,maxIndent)));
+            if(assembly) {format_set_bold(format);format_set_bg_color(format,0xEAF1F7);}
+        }
+        return format;
+    };
+    struct Pending {size_t index;int depth;QString number;};
+    std::vector<Pending> pending;
+    for(size_t i=roots.size();i>0;--i) pending.push_back({roots[i-1],0,QString::number(qulonglong(i))});
+    lxw_row_t row=1;
+    size_t visited=0;
+    int deepest=0;
+    while(!pending.empty()) {
+        checkCancel(cancel);
+        auto current=std::move(pending.back());pending.pop_back();
+        const auto& occurrence=doc.occurrences[current.index];
+        const auto& descendants=children[current.index];
+        const bool assembly=occurrence.partIndex<0;
+        deepest=std::max(deepest,current.depth);
+        lxw_row_col_options options {};
+        options.level=uint8_t(std::min(current.depth,maxOutlineDepth));
+        options.hidden=current.depth>1;
+        options.collapsed=current.depth==1&&!descendants.empty();
+        checked(worksheet_set_row_opt(sheet,row,20,assembly?assemblyFormat:nullptr,&options));
+        string(sheet,row,0,current.number);
+        string(sheet,row,1,occurrence.name,nameFormat(current.depth,assembly));
+        string(sheet,row,2,assembly?QStringLiteral("装配/组"):QStringLiteral("叶级产品"));
+        number(sheet,row,3,1);
+        string(sheet,row,4,occurrence.id);
+        if(occurrence.parent>=0) string(sheet,row,5,doc.occurrences[size_t(occurrence.parent)].id);
+        number(sheet,row,6,current.depth);
+        string(sheet,row,7,labelEntry(occurrence.definitionLabel));
+        string(sheet,row,8,occurrence.path);
+        ++row;++visited;
+        for(size_t i=descendants.size();i>0;--i)
+            pending.push_back({descendants[i-1],current.depth+1,current.number+QLatin1Char('.')+QString::number(qulonglong(i))});
+    }
+    if(visited!=doc.occurrences.size()) fail(QStringLiteral("装配层级包含循环引用，未写入 Excel。"));
+    // Filtering/sorting this sheet would break contiguous tree groups. The
+    // independent summary and position sheets retain their existing filters.
+    QStringList notes {QStringLiteral("装配层级按实际实例展开，每行数量为 1；同名零件不合并。默认显示根节点及其直接子节点，可使用 Excel 左侧 +/− 展开或收起；零件汇总按定义统计勾选范围数量。")};
+    if(deepest>maxOutlineDepth)
+        notes << QStringLiteral("装配最大深度为 %1（根为 0）。Excel 原生大纲最多支持 7 个嵌套分组级别；超过第 7 级的节点仍完整保留，使用层级序号、层级和实例路径区分，不能分别按更深级别折叠。名称缩进最多显示 15 级。").arg(deepest);
+    return notes;
+}
 } // namespace
 
 void exportBom(const CadDocument& doc, const QString& path, std::atomic_bool* cancel) {
@@ -177,22 +261,8 @@ void exportBom(const CadDocument& doc, const QString& path, std::atomic_bool* ca
         }
     }
     if (!doc.parts.empty()) checked(worksheet_autofilter(summary,0,0,lxw_row_t(doc.parts.size()),lxw_col_t(headings.size()-1)));
-    auto* hierarchy=workbook.sheet("装配层级",{QStringLiteral("实例 ID"),QStringLiteral("父实例 ID"),QStringLiteral("层级"),
-        QStringLiteral("名称"),QStringLiteral("类型"),QStringLiteral("定义 ID"),QStringLiteral("实例路径"),QStringLiteral("本行数量")});
-    lxw_row_t row=1;
-    for(const auto& occurrence:doc.occurrences) {
-        checkCancel(cancel);
-        int depth=0, parent=occurrence.parent;
-        while(parent>=0) { ++depth; parent=doc.occurrences.at(parent).parent; }
-        string(hierarchy,row,0,occurrence.id);
-        if(occurrence.parent>=0) string(hierarchy,row,1,doc.occurrences.at(occurrence.parent).id);
-        number(hierarchy,row,2,depth); string(hierarchy,row,3,occurrence.name);
-        string(hierarchy,row,4,occurrence.partIndex<0?QStringLiteral("装配/组"):QStringLiteral("叶级产品"));
-        string(hierarchy,row,5,labelEntry(occurrence.definitionLabel)); string(hierarchy,row,6,occurrence.path);
-        number(hierarchy,row,7,1); ++row;
-    }
-    if(row>1) checked(worksheet_autofilter(hierarchy,0,0,row-1,7));
-    writePositions(workbook,doc,nullptr,cancel); writeDiagnostics(workbook,doc,{},cancel);
+    const auto hierarchyNotes=writeHierarchy(workbook,doc,cancel);
+    writePositions(workbook,doc,nullptr,cancel); writeDiagnostics(workbook,doc,hierarchyNotes,cancel);
     workbook.finish(path,cancel);
 }
 
