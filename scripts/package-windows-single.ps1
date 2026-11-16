@@ -13,7 +13,7 @@ $Evidence = Join-Path (Split-Path -Parent $Output) 'validation/windows/single-ex
 New-Item -ItemType Directory -Path $Evidence -Force | Out-Null
 $Temporary = Join-Path ([IO.Path]::GetTempPath()) ('stp-single-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Temporary -Force | Out-Null
-$Report = [ordered]@{ status='running'; mode='self-extracting user-cache portable executable'; signed=$false; checks=@(); error=$null }
+$Report = [ordered]@{ version='1.1.00'; status='running'; mode='self-extracting user-cache portable executable'; signed=$false; checks=@(); error=$null }
 try {
     $Hash = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
     $Manifest = Join-Path $Temporary 'manifest.txt'
@@ -26,10 +26,23 @@ try {
     $Source = Join-Path $Temporary 'launcher.cs'
     $Template = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'windows_portable_launcher.cs'))
     [IO.File]::WriteAllText($Source, $Template.Replace('@PAYLOAD_HASH@',$Hash), (New-Object Text.UTF8Encoding($false)))
+    $VersionSource = Join-Path $Temporary 'AssemblyInfo.cs'
+    $VersionAttributes = @'
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.1.00")]
+'@
+    [IO.File]::WriteAllText($VersionSource, $VersionAttributes, (New-Object Text.UTF8Encoding($false)))
     $Compiler = Join-Path $env:SystemRoot 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     if (-not (Test-Path -LiteralPath $Compiler)) { throw 'The Windows .NET Framework 4.x C# compiler is missing.' }
     $Generated = Join-Path $Temporary 'STPViewer-Portable.exe'
-    Invoke-StpNative $Compiler @('/nologo','/target:winexe','/platform:x64','/optimize+',('/out:'+$Generated),('/win32icon:'+(Join-Path $Root 'images/stpviewer-aeme.ico')),('/resource:'+$Archive+',payload'),('/resource:'+$Manifest+',manifest'),'/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Windows.Forms.dll',$Source) (Join-Path $Evidence 'compile') -TimeoutSeconds 300 | Out-Null
+    Invoke-StpNative $Compiler @('/nologo','/target:winexe','/platform:x64','/optimize+',('/out:'+$Generated),('/win32icon:'+(Join-Path $Root 'images/stpviewer-aeme.ico')),('/resource:'+$Archive+',payload'),('/resource:'+$Manifest+',manifest'),'/reference:System.IO.Compression.dll','/reference:System.IO.Compression.FileSystem.dll','/reference:System.Windows.Forms.dll',$Source,$VersionSource) (Join-Path $Evidence 'compile') -TimeoutSeconds 300 | Out-Null
+    $VersionInfo = (Get-Item -LiteralPath $Generated).VersionInfo
+    if ($VersionInfo.ProductVersion -ne '1.1.00' -or $VersionInfo.FileMajorPart -ne 1 -or
+        $VersionInfo.FileMinorPart -ne 1 -or $VersionInfo.FileBuildPart -ne 0 -or $VersionInfo.FilePrivatePart -ne 0) {
+        throw 'The portable launcher version metadata does not match 1.1.00 (1.1.0.0).'
+    }
+    $Report['version_info']=@{ file=$VersionInfo.FileVersion; product=$VersionInfo.ProductVersion; numeric='1.1.0.0' }
     # Only the wrapper EXE is copied to the launch directory; all dependencies
     # must be extracted from its embedded, checksum-verified snapshot.
     $Launch = Join-Path $Temporary 'single exe relocated'

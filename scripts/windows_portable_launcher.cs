@@ -14,7 +14,7 @@ internal static class PortableLauncher
 {
     // Compiled by the Windows packaging script from the verified ZIP snapshot.
     private const string PayloadHash = "@PAYLOAD_HASH@";
-    private const string ArchiveRoot = "STPViewer-1.0.0-windows-x64/";
+    private const string ArchiveRoot = "STPViewer-1.1.00-windows-x64/";
 
     private static string Hash(Stream stream)
     {

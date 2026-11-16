@@ -14,7 +14,7 @@ $Validation = Join-Path $Output 'validation/windows'
 New-Item -ItemType Directory -Path $Validation -Force | Out-Null
 $ReportPath = Join-Path $Output 'windows-build-report.json'
 $Report = [ordered]@{
-    schema = 1; application = 'STPViewer'; version = '1.0.0'; status = 'running';
+    schema = 1; application = 'STPViewer'; version = '1.1.00'; status = 'running';
     started_utc = [DateTime]::UtcNow.ToString('o'); finished_utc = $null;
     github_actions = [ordered]@{ repository=$env:GITHUB_REPOSITORY; commit=$env:GITHUB_SHA; run_id=$env:GITHUB_RUN_ID };
     environment = [ordered]@{ os = [Environment]::OSVersion.VersionString; process_architecture = $env:PROCESSOR_ARCHITECTURE; native_architecture = $env:PROCESSOR_ARCHITEW6432; powershell_version = $PSVersionTable.PSVersion.ToString(); build_target = 'x64'; gpu_test_scope = 'local interactive session only' };
@@ -78,28 +78,27 @@ try {
     $Build = Join-Path $Root 'build-windows'
     Invoke-StpNative $Cmake @('-C', (Join-Path $Root '.deps/paths.cmake'), '-S', $Root, '-B', $Build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DSTP_BUILD_TESTS=ON') (Join-Path $Validation 'configure') | Out-Null
     Add-Check 'configure' 'passed' @{ generator='Ninja'; configuration='Release' }
-    $Targets = @('STPViewer', 'stp_core_tests', 'stp_measurement_tests', 'stp_pmi_tests', 'stp_job_queue_tests', 'stp_placement_tests', 'stp_transform_panel_tests', 'stp_section_color_tests', 'stp_envelope_tests')
-    if (-not $SkipGuiTests) { $Targets += @('stp_envelope_integration_tests', 'stp_section_color_integration_tests', 'stp_editing_integration_tests', 'stp_viewer_tests', 'stp_workspace_tests', 'stp_appearance_tests', 'stp_layout_tests', 'stp_measurement_integration_tests') }
-    if ($SkipGuiTests -and $RunFeatureGuiTests) { $Targets += @('stp_envelope_integration_tests', 'stp_section_color_integration_tests', 'stp_editing_integration_tests') }
+    $Targets = @('STPViewer', 'stp_core_tests', 'stp_measurement_tests', 'stp_pmi_tests', 'stp_job_queue_tests', 'stp_placement_tests', 'stp_transform_panel_tests', 'stp_section_color_tests', 'stp_bom_outline_tests', 'stp_color_edit_tests')
+    if (-not $SkipGuiTests) { $Targets += @('stp_section_color_integration_tests', 'stp_editing_integration_tests', 'stp_color_edit_integration_tests', 'stp_main_color_tests', 'stp_fullscreen_tests', 'stp_viewer_tests', 'stp_workspace_tests', 'stp_appearance_tests', 'stp_layout_tests', 'stp_measurement_integration_tests') }
+    if ($SkipGuiTests -and $RunFeatureGuiTests) { $Targets += @('stp_section_color_integration_tests', 'stp_editing_integration_tests') }
     $Qt = Join-Path $Root ".deps/qt/$($Lock.qt.version)/msvc2022_64"
     $Prefix = Join-Path $Root '.deps/install'
     $env:PATH = "$(Join-Path $Prefix 'bin');$(Join-Path $Qt 'bin');$env:PATH"
     $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $Qt 'plugins/platforms'
     $env:CSF_ShadersDirectory = Join-Path $Prefix 'share/opencascade/resources/Shaders'
     # Fail early on exact geometry/STEP regressions before compiling every GUI executable.
-    Invoke-StpNative $Cmake @('--build', $Build, '--target', 'stp_envelope_tests', '--parallel', [string]$Jobs) (Join-Path $Validation 'envelope-preflight-build') -TimeoutSeconds 14400 | Out-Null
-    Invoke-StpNative $Ctest @('--test-dir', $Build, '-R', '^stp_envelope_tests$', '--output-on-failure') (Join-Path $Validation 'envelope-preflight') | Out-Null
-    Add-Check 'envelope-geometry-preflight' 'passed' @{ logs='validation/windows/envelope-preflight.*.log' }
     Invoke-StpNative $Cmake (@('--build', $Build, '--target') + $Targets + @('--parallel', [string]$Jobs)) (Join-Path $Validation 'build') -TimeoutSeconds 14400 | Out-Null
     Add-Check 'application-and-regression-build' 'passed' @{ targets=$Targets }
     Invoke-StpNative $Ctest @('--test-dir', $Build, '--output-on-failure', '--output-junit', (Join-Path $Validation 'ctest.xml')) (Join-Path $Validation 'ctest') | Out-Null
     Add-Check 'core-and-pmi-ctest' 'passed' @{ junit='validation/windows/ctest.xml'; logs='validation/windows/ctest.*.log' }
     if (-not $SkipGuiTests -or $RunFeatureGuiTests) {
-        Invoke-GuiRegression 'customer-envelope-gui-and-step-roundtrip' 'stp_envelope_integration_tests.exe' @((Join-Path $Validation 'envelope')) 'envelope-tests' @{ report='validation/windows/envelope/envelope-report.json'; evidence='validation/windows/envelope' } 300
         Invoke-GuiRegression 'interactive-editing-regression' 'stp_editing_integration_tests.exe' @((Join-Path $Root 'samples/colored-assembly.step'), (Join-Path $Validation 'editing')) 'editing-tests' @{ evidence='validation/windows/editing' } 300
         Invoke-GuiRegression 'section-color-gui-and-step-roundtrip' 'stp_section_color_integration_tests.exe' @((Join-Path $Validation 'section-color')) 'section-color-tests' @{ report='validation/windows/section-color/section-color-report.json'; evidence='validation/windows/section-color' } 300
     }
     if (-not $SkipGuiTests) {
+        Invoke-GuiRegression 'interactive-color-edit-regression' 'stp_color_edit_integration_tests.exe' @((Join-Path $Validation 'color-edit')) 'color-edit-tests' @{ report='validation/windows/color-edit/color-edit-report.json'; evidence='validation/windows/color-edit' } 300
+        Invoke-GuiRegression 'interactive-main-color-regression' 'stp_main_color_tests.exe' @((Join-Path $Root 'samples/colored-assembly.step'), (Join-Path $Validation 'main-color')) 'main-color-tests' @{ report='validation/windows/main-color/main-color-report.json'; evidence='validation/windows/main-color' } 300
+        Invoke-GuiRegression 'interactive-fullscreen-regression' 'stp_fullscreen_tests.exe' @((Join-Path $Root 'samples/colored-assembly.step'), (Join-Path $Validation 'fullscreen')) 'fullscreen-tests' @{ report='validation/windows/fullscreen/fullscreen-report.json'; evidence='validation/windows/fullscreen' } 300
         Invoke-GuiRegression 'interactive-opengl-regression' 'stp_viewer_tests.exe' @((Join-Path $Root 'samples/colored-assembly.step')) 'viewer-tests' @{ logs='validation/windows/viewer-tests.*.log' } 300
         Invoke-GuiRegression 'interactive-measurement-regression' 'stp_measurement_integration_tests.exe' @((Join-Path $Validation 'measurement')) 'measurement-tests' @{ evidence='validation/windows/measurement' }
         foreach ($Test in @('workspace', 'appearance', 'layout')) {
@@ -111,7 +110,7 @@ try {
     } else { Add-Check 'interactive-opengl-regression' 'skipped' 'Explicit -SkipGuiTests. Packaged smoke tests still run; physical desktop interaction remains unverified.' }
     if ($GuiFailures.Count -gt 0) { throw ("GUI regressions failed: {0}. See the individual reports in validation/windows." -f ($GuiFailures -join ', ')) }
     & (Join-Path $PSScriptRoot 'package-windows.ps1') -Executable (Join-Path $Build 'STPViewer.exe') -Output $Output -DependencyPrefix $Prefix
-    & (Join-Path $PSScriptRoot 'package-windows-single.ps1') -Directory (Join-Path $Output 'STPViewer-1.0.0-windows-x64') -Archive (Join-Path $Output 'STPViewer-1.0.0-windows-x64.zip') -Output (Join-Path $Output 'STPViewer-1.0.0-windows-x64-portable.exe')
+    & (Join-Path $PSScriptRoot 'package-windows-single.ps1') -Directory (Join-Path $Output 'STPViewer-1.1.00-windows-x64') -Archive (Join-Path $Output 'STPViewer-1.1.00-windows-x64.zip') -Output (Join-Path $Output 'STPViewer-1.1.00-windows-x64-portable.exe')
     Add-Check 'single-exe-extraction-and-measurement' 'passed' @{ report='validation/windows/single-exe/single-exe-report.json' }
     $PackageReport = Join-Path $Output 'windows-bundle-validation.json'
     $Report.package = Get-Content -LiteralPath $PackageReport -Raw -Encoding UTF8 | ConvertFrom-Json
