@@ -65,7 +65,7 @@ int main(int argc,char** argv)
     palette.setColor(QPalette::Disabled, QPalette::Text, QColor("#8997a7"));
     palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#8997a7"));
     app.setPalette(palette);
-    QCoreApplication::setApplicationName("STPViewer");QCoreApplication::setApplicationVersion("1.0.0");
+    QCoreApplication::setApplicationName("STPViewer");QCoreApplication::setApplicationVersion("1.1.00");
     QCoreApplication::setOrganizationName("STPViewer");
     QCommandLineParser parser;parser.setApplicationDescription(QStringLiteral("离线 STEP 工程查看器"));parser.addHelpOption();parser.addVersionOption();
     parser.addPositionalArgument("file",QStringLiteral("要打开的 .stp / .step 文件"));

@@ -258,7 +258,9 @@ def main():
     if licenses.is_dir():
         shutil.copytree(licenses, resources / "licenses", dirs_exist_ok=True)
     for rel in ("LICENSE.txt", "THIRD_PARTY_NOTICES.md", "STP_README.md", "VALIDATION.md",
-                "doc/stp_mac_part_grab.md", "doc/stp_mac_measurement.md", "doc/stp_mac_measurement_validation.md"):
+                "doc/stp_mac_part_grab.md", "doc/stp_mac_measurement.md", "doc/stp_mac_measurement_validation.md",
+                "doc/bom-color-fullscreen.md", "doc/placement-editing.md", "doc/section-color-editing.md",
+                "doc/release-v1.1.00.md"):
         if not (ROOT / rel).is_file():
             raise RuntimeError(f"Required distribution document is missing: {rel}")
         destination = resources / rel
@@ -324,6 +326,9 @@ def main():
                     command(["install_name_tool", "-id", "@rpath/" + copied.name, copied])
                 command(["install_name_tool", "-change", dep, "@rpath/" + copied.name, binary])
     info = plistlib.loads((contents / "Info.plist").read_bytes())
+    for version_key in ("CFBundleVersion", "CFBundleShortVersionString"):
+        if info.get(version_key) != "1.1.00":
+            raise RuntimeError(f"Application {version_key} does not match 1.1.00: {info.get(version_key)!r}")
     info["LSMinimumSystemVersion"] = "12.0"
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
     executable = contents / "MacOS" / info["CFBundleExecutable"]
@@ -371,7 +376,7 @@ def main():
         command(["codesign", "--force", "--sign", args.identity, framework])
     command(["codesign", "--force", "--sign", args.identity, bundle])
     command(["codesign", "--verify", "--deep", "--strict", bundle])
-    name = "STPViewer-1.0.0-macos-arm64.zip"
+    name = "STPViewer-1.1.00-macos-arm64.zip"
     archive = args.output / name
     if archive.exists():
         archive.unlink()
@@ -398,7 +403,7 @@ def main():
     sha = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_suffix(".zip.sha256").write_text(f"{sha}  {name}\n")
     (args.output / "macos-bundle-validation.json").write_text(json.dumps({
-        "archive": name, "application": published.name, "application_is_real_directory": True,
+        "version": "1.1.00", "archive": name, "application": published.name, "application_is_real_directory": True,
         "published_signature": published_signature, "published_runtime": published_runtime,
         "archive_application_content_match": True,
         "sha256": sha, "architecture": "arm64", "signed": args.identity,

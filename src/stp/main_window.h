@@ -8,7 +8,6 @@
 #include <QPointer>
 #include <optional>
 #include "color_edits.h"
-#include "customer_envelope.h"
 #include <QUndoStack>
 
 class QAction; class QCheckBox; class QComboBox; class QLabel; class QLineEdit;
@@ -20,6 +19,7 @@ class QToolButton;
 
 namespace Stp {
 class ViewerWidget;
+class ViewportFullscreenButton;
 class CadJobQueue;
 class MeasurementPanel;
 class PartTransformPanel;
@@ -42,7 +42,6 @@ public:
     quint64 sessionId() const { return m_owner; }
     std::shared_ptr<CadDocument> document() const { return m_document; }
     QMenu* documentViewMenu() const;
-    QMenu* documentProcessingMenu() const;
     QMenu* documentHelpMenu() const;
     int appearanceUndoCount() const { return int(m_appearanceHistory.size()); }
     bool hasPlacementChanges() const;
@@ -51,8 +50,16 @@ public:
     void resetAppearance();
     bool setPartColors(const std::vector<int>& occurrences, const QColor& color);
     bool restorePartColors(const std::vector<int>& occurrences);
+    bool setFaceColors(const std::vector<FaceColorKey>&, const QColor&);
+    bool restoreFaceColors(const std::vector<FaceColorKey>&);
+    bool randomizeColors(quint32 seed);
+    void setViewportOnly(bool active);
+    bool isViewportOnly() const { return m_viewportOnly; }
+    bool cancelViewportPick();
     const ColorEdits& colorEdits() const { return m_colors; }
 signals:
+    void viewportFullscreenRequested();
+    void viewportPanelsRequested();
     void openFilesRequested(const QStringList& paths);
     void stateChanged();
     void closeReady();
@@ -71,9 +78,6 @@ private:
     void saveBom();
     void saveParts();
     void saveAssembly(bool closeAfter = false);
-    void openCustomerEnvelope();
-    EnvelopeOptions m_envelopeOptions;
-    QAction* m_envelopeAction = nullptr;
     void openPlacementPanel();
     void updatePlacementActions();
     PartTransformPanel* m_transformPanel = nullptr;
@@ -85,12 +89,22 @@ private:
     void diagnostic(const QString& text);
     void updateSection();
     void choosePartColor();
+    bool prepareDialogWindow(const std::function<void()>& retry);
     void commitColors(const ColorEdits&, const QString&);
     void updateColorActions();
     SectionPanel* m_sectionPanel = nullptr;
     ColorEdits m_colors, m_savedColors;
     QUndoStack m_colorHistory;
     QAction *m_colorAction = nullptr, *m_restoreColorAction = nullptr, *m_sectionAction = nullptr;
+    QAction *m_randomColorAction = nullptr, *m_restoreAllColorsAction = nullptr;
+    QComboBox* m_colorMode = nullptr;
+    ViewportFullscreenButton* m_fullscreenButton = nullptr;
+    bool m_viewportOnly = false;
+    QByteArray m_viewportDockState;
+    QMargins m_viewportMargins;
+    int m_viewportSpacing = 0;
+    QPointer<QWidget> m_viewportFocus;
+    std::vector<std::pair<QPointer<QWidget>, bool>> m_viewportVisibility;
     QAction *m_undoColorAction = nullptr, *m_redoColorAction = nullptr;
     void filterTree(const QString& text);
     void startSmokeCapture(qint64 loadMs);

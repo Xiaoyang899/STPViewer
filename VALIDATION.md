@@ -1,8 +1,29 @@
-# STP Viewer 1.0 验证说明
+# STP Viewer 验证说明
+
+## V1.1.00 验证范围与报告
+
+V1.1.00 的功能和下载文件见 [更新说明](doc/release-v1.1.00.md)。每个发布附件的最终构建状态、内部版本、源码身份、SHA-256 和包级运行结果，以 [同次 Release](https://github.com/Xiaoyang899/STPViewer/releases/tag/v1.1.00) 随附的验证报告为准。重新编号的包必须重新构建与核验，不能把 1.0.0 测试包改名后作为 V1.1.00 的验证结果。
+
+以下是发布前已有的**功能测试基线**；当时测试包内部版本仍为 1.0.0，它们证明对应功能回归已运行，不单独证明 V1.1.00 附件已完成验收。
+
+| 功能基线 | 已有结果与边界 |
+|---|---|
+| 2026-11-15 Apple Silicon Mac | 9 项 CTest 与 7 组原生 GUI 回归通过；包含选面空白点击、颜色撤销历史、重建网格、全屏抓手与布局恢复；ZIP 独立解压签名、47 个 Mach-O 和 6 个样例运行检查通过 |
+| 2026-11-16 Windows x64 目标 | VMware Windows 11 ARM64 中的 x64 仿真构建与运行；9 项 CTest、10 组 GUI、6 个独立解压样例与 4 项单 EXE 检查通过；83 个 PE、ZIP／EXE 哈希及内嵌 ZIP 一致性核验通过 |
+| Windows 全屏尺寸还原 | 最终功能回归在 200% DPI、1512×949 逻辑屏幕上运行，窗口及视口进入前后尺寸一致；极小逻辑桌面无法容纳窗口及系统边框时，Qt 可能纠正越界几何，不以此声称任意缩放／桌面组合均已验收 |
+| Excel BOM | XLSX 数据与原生行分组标记有回归覆盖；不能据此声称 Microsoft Excel 客户端全部逐级展开、收拢和保存重开流程已完成人工验收 |
+
+Mac 基线为本机 Apple Silicon／Retina，Windows 基线为 ARM64 来宾运行 x64 程序。**Windows 仿真结果不等同于原生 Windows x64 硬件验收，也不代表原生 Windows ARM64 程序。** 下文项目作者对 1.0 的 Windows 10／11 x64 确认属于历史版本记录，不自动继承为 V1.1.00 的平台验收。
+
+本版新功能的验收重点为：BOM 的多根、重复实例、部分勾选和超过 7 层；随机色同名一致、邻近异名区分及颜色撤销；单实例面色隔离、重建网格、STEP 回读及空白点击安全性；全屏按钮动画、抓手状态、真实拖动、面板／相机还原及多文件生命周期。实际执行项目以各包报告和原始日志为准。
+
+Mac 使用 ad-hoc 签名，未做 Apple 公证；Windows 未做 Authenticode 签名。macOS 12 本机、另一台独立干净电脑、原生 Windows x64 硬件、其他显卡／缩放组合、大型真实工程装配和目标 CAD 回读仍不能由上述基线推定通过。整装 STEP 另存不导出 PMI，也不保存爆炸、抓手等临时显示状态；其余功能边界见使用说明。
+
+## 1.0.0 历史记录
 
 本文汇总 2026-10-07 Mac、2026-10-08 Windows 1.0.0 新包的自动回归与实际运行核验，以及 2026-10-07 项目作者补充确认的平台运行实测。1.0 正式版的源码版本及打包命名已统一为 1.0.0，个人反馈邮箱已同步到源码与应用；两平台本次新包均已完成构建及包级实测。此前 0.1.0 的验证证据保留其原始版本信息，未改写为本次新包的测试结果。源码及公开回归样例可用于重跑；原始构建日志保存在开发交付目录。未将构建主机搬移验证作为独立干净系统验收。
 
-## 最新验证
+## 1.0.0 历史验证汇总
 
 | 范围 | 结果 |
 |---|---|
@@ -52,12 +73,18 @@ Mac／Windows 共用署名使用 `Powered by AEME. Feedback: xiaoyang8992@gmail.
 - `stp_measurement_tests`：几何测量核心。
 - `stp_pmi_tests`：PMI 语义、图形、读写及保留边界。
 - `stp_job_queue_tests`：串行任务队列与取消。
+- `stp_placement_tests`、`stp_transform_panel_tests`：实例位置、平移旋转与编辑面板。
+- `stp_section_color_tests`、`stp_section_color_integration_tests`：自定义剖切、封盖颜色、着色及 STEP 保存回读。
+- `stp_bom_outline_tests`：Excel 装配层级、实例范围和原生行分组。
+- `stp_color_edit_tests`、`stp_color_edit_integration_tests`、`stp_main_color_tests`：名称配色、实例面色、真实空白点击、撤销及文件隔离。
+- `stp_editing_integration_tests`：位置编辑、背景、整装另存与真实保存路径。
+- `stp_fullscreen_tests`：模型全屏、动画、抓手、窗口还原和多文件生命周期。
 - `stp_viewer_tests`：真实三维拾取、标注、抓手及显示状态。
 - `stp_measurement_integration_tests`：操作页、记录及多文件生命周期。
 - `stp_workspace_tests`、`stp_appearance_tests`、`stp_layout_tests`（Windows）／`stp_mac_layout_tests`（Mac）：多文件、外观和布局。
 - `STPViewer --smoke-test 输出目录 样例.step`：实际应用截图、测量、BOM 和 STEP 导出。
 
-图形测试需要桌面会话和可用 OpenGL。GitHub Actions 的结果以实际运行日志为准；首次公开前尚未在新仓库执行。当前便携工作流手动触发，Windows 的 `-SkipGuiTests` 会明确标记跳过完整界面回归，包级自检继续运行。
+图形测试需要桌面会话和可用 OpenGL。GitHub Actions 的结果以对应提交的实际运行日志为准，不能用历史工作流结果替代当前版本验收。Windows 便携工作流在 main 推送后自动运行，Mac 构建可手动开启；Windows 正常入口执行完整 GUI 回归，`-SkipGuiTests` 会明确标记跳过，不能作为完整交互验收，包级自检继续运行。
 
 ## 待验证范围
 

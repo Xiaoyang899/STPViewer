@@ -3,7 +3,8 @@
 #include "section_panel.h"
 #include <QUndoCommand>
 #include "assembly_export.h"
-#include "envelope_dialog.h"
+#include "fullscreen_button.h"
+#include <QRandomGenerator>
 #include <QColorDialog>
 #include <QSettings>
 #if defined(Q_OS_MACOS)
@@ -205,6 +206,47 @@ MainWindow::~MainWindow()
     if(m_worker) m_worker->wait();
 }
 
+bool MainWindow::cancelViewportPick()
+{
+    if(m_view->sectionPicking()){m_view->cancelSectionPlanePick();return true;}
+    if(m_view->faceColorPicking()){m_view->setFaceColorPicking(false);return true;}
+    if(m_view->measurementPicking()){
+        if(m_measurementPanel)m_measurementPanel->cancelForSessionSwitch();
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::setViewportOnly(bool active)
+{
+    if(active==m_viewportOnly)return;
+    auto page=findChild<QWidget*>("modelPage");auto layout=page?page->layout():nullptr;
+    if(!layout)return;
+    m_view->finishPartDrag();
+    if(active){
+        dismissAppearanceMenu();
+        m_viewportDockState=saveState();m_viewportFocus=QApplication::focusWidget();
+        m_viewportMargins=layout->contentsMargins();m_viewportSpacing=layout->spacing();
+        m_viewportVisibility.clear();
+        const auto hide=[this](QWidget* widget){if(!widget)return;
+            const auto found=std::find_if(m_viewportVisibility.begin(),m_viewportVisibility.end(),[widget](const auto& p){return p.first==widget;});
+            if(found==m_viewportVisibility.end()){m_viewportVisibility.push_back({widget,!widget->isHidden()});widget->hide();}};
+        for(int i=0;i<layout->count();++i)if(auto widget=layout->itemAt(i)->widget();widget&&widget!=m_view)hide(widget);
+        for(auto dock:findChildren<QDockWidget*>())hide(dock);
+        for(auto toolbar:findChildren<QToolBar*>())hide(toolbar);
+        hide(menuBar());hide(statusBar());
+        layout->setContentsMargins(0,0,0,0);layout->setSpacing(0);
+        m_viewportOnly=true;
+    }else{
+        m_viewportOnly=false;layout->setContentsMargins(m_viewportMargins);layout->setSpacing(m_viewportSpacing);
+        for(const auto& entry:m_viewportVisibility)if(entry.first)entry.first->setVisible(entry.second);
+        restoreState(m_viewportDockState);m_viewportVisibility.clear();
+        if(m_viewportFocus)m_viewportFocus->setFocus();
+    }
+    if(m_fullscreenButton)m_fullscreenButton->setFullscreen(active);
+    m_view->update();
+}
+
 void MainWindow::buildUi()
 {
     auto toolbar=addToolBar(QStringLiteral("主工具栏")); toolbar->setObjectName("mainToolbar");
@@ -273,9 +315,6 @@ void MainWindow::buildUi()
     fileMenu->addAction(m_saveAssemblyAction);
     fileMenu->addSeparator(); fileMenu->addAction(QStringLiteral("退出"),this,&QWidget::close);
     auto viewMenu=menuBar()->addMenu(QStringLiteral("视图")); viewMenu->setObjectName("viewMenu");
-    auto processingMenu=menuBar()->addMenu(QStringLiteral("模型处理"));processingMenu->setObjectName("processingMenu");
-    m_envelopeAction=toolbar->addAction(QStringLiteral("客户外包络…"),this,&MainWindow::openCustomerEnvelope);
-    m_envelopeAction->setObjectName("customerEnvelope");m_envelopeAction->setEnabled(false);processingMenu->addAction(m_envelopeAction);
     viewMenu->addAction(m_undoAppearanceAction);viewMenu->addAction(m_resetAppearanceAction);viewMenu->addSeparator();
     viewMenu->addAction(m_transformAction);
     auto backgroundMenu=viewMenu->addMenu(QStringLiteral("背景颜色"));backgroundMenu->setObjectName("backgroundMenu");
@@ -287,7 +326,10 @@ void MainWindow::buildUi()
             QSettings settings;auto color=settings.value("view/customBackground",QColor("#c6d9eb")).value<QColor>();
             if(key=="custom"){color=QColorDialog::getColor(color,this,QStringLiteral("三维背景颜色"));if(!color.isValid())return;settings.setValue("view/customBackground",color);}
             settings.setValue("view/background",key);
-            for(auto widget:QApplication::allWidgets())if(auto viewer=qobject_cast<ViewerWidget*>(widget))viewer->reloadBackground();
+            for(auto widget:QApplication::allWidgets()){
+                if(auto viewer=qobject_cast<ViewerWidget*>(widget))viewer->reloadBackground();
+                if(auto button=qobject_cast<ViewportFullscreenButton*>(widget))button->setDarkBackground(key=="dark"||(key=="custom"&&color.lightnessF()<.5));
+            }
         });
     }
     auto helpMenu=menuBar()->addMenu(QStringLiteral("帮助"));helpMenu->setObjectName("helpMenu");
@@ -307,7 +349,7 @@ void MainWindow::buildUi()
         "装配爆炸区“复位”将所有零件恢复到导入位置并把爆炸归零，保留相机、选择与抓手开关。外观“全部复原”不改变摆放位置。抓手与爆炸叠加，剖切继续使用原始范围。每个标签页独立保留抓手和摆放状态，关闭后重新打开恢复初始状态。摆放只影响显示，工程属性、BOM 与 STEP 导出仍使用原始位置。\n\n"
 #endif
         "装配树勾选框控制显隐。爆炸、抓手和剖切只影响显示。位置编辑应用后可另存 STEP；拆分导出仍使用原始定义。\n\nBOM 为 STEP 几何/装配清单，缺失材料与密度不会自动推断。PMI 的支持状态请查看标注及诊断面板。").arg(QKeySequence(Qt::CTRL|Qt::Key_W).toString(QKeySequence::NativeText),QKeySequence(Qt::CTRL).toString(QKeySequence::NativeText).replace("+", "")));});
-    helpMenu->addAction(QStringLiteral("关于与开源许可"),[this]{QMessageBox::about(this,QStringLiteral("STP Viewer 1.0.0"),QStringLiteral(
+    helpMenu->addAction(QStringLiteral("关于与开源许可"),[this]{QMessageBox::about(this,QStringLiteral("STP Viewer 1.1.00"),QStringLiteral(
         "完全离线的 STEP 工程查看器\n\n基于 Mayo v0.10.0（BSD-2-Clause）\nQt 6.8.3 · Open CASCADE 7.9.3\nlibxlsxwriter 1.2.4\n\n依赖及许可文本随发行包提供。标注支持范围和验证状态见随包说明。"));});
 
     auto center=new QWidget; auto centerLayout=new QVBoxLayout(center); centerLayout->setContentsMargins(8,4,8,4); centerLayout->setSpacing(6);
@@ -322,6 +364,13 @@ void MainWindow::buildUi()
     m_summary->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);m_summary->setVisible(!m_compactLayout);
     centerLayout->addWidget(m_summary);
     m_view=new ViewerWidget(this); centerLayout->addWidget(m_view,1);
+    m_fullscreenButton=new ViewportFullscreenButton(m_view->findChild<QOpenGLWidget*>("cadViewport"));
+    connect(m_fullscreenButton,&ViewportFullscreenButton::toggleRequested,this,[this]{
+        if(m_embedded)emit viewportFullscreenRequested();
+        else {const bool entering=!m_viewportOnly;setViewportOnly(entering);if(entering)showFullScreen();else showNormal();}
+    });
+    {QSettings settings;const auto key=settings.value("view/background","light").toString();
+     m_fullscreenButton->setDarkBackground(key=="dark"||(key=="custom"&&settings.value("view/customBackground",QColor("#c6d9eb")).value<QColor>().lightnessF()<.5));}
     connect(m_view,&ViewerWidget::partContextMenuRequested,this,&MainWindow::showPartAppearanceMenu);
     const int availableHeight=screen()?screen()->availableGeometry().height():920;
     m_view->setMinimumSize(180,std::clamp(availableHeight/4,90,180));
@@ -339,12 +388,17 @@ void MainWindow::buildUi()
     grabIcon.addFile(QStringLiteral(":/stp/grab/open.svg"),QSize(),QIcon::Normal,QIcon::Off);
     grabIcon.addFile(QStringLiteral(":/stp/grab/closed.svg"),QSize(),QIcon::Normal,QIcon::On);
     m_partGrabAction->setIcon(grabIcon);
+    m_fullscreenButton->setGrabAction(m_partGrabAction);
     m_partGrabAction->setToolTip(QStringLiteral("抓手：展开手掌为关闭，抓握手掌为开启。开启后左键拖动单个零件，松开保留位置；再次点击恢复左键旋转。"));
     auto grabButton=new QToolButton;grabButton->setObjectName("partGrabButton");
     grabButton->setToolButtonStyle(Qt::ToolButtonIconOnly);grabButton->setDefaultAction(m_partGrabAction);
     grabButton->setIconSize(QSize(28,28));grabButton->setAccessibleName(QStringLiteral("抓手"));
     auto scopeRow=new QHBoxLayout;scopeRow->addWidget(m_scope,1);scopeRow->addWidget(grabButton);explosionLayout->addLayout(scopeRow);
     viewMenu->addAction(m_partGrabAction);viewMenu->addSeparator();
+    connect(m_view,&ViewerWidget::grabModeChanged,this,[this](bool active){
+        {QSignalBlocker block(m_partGrabAction);m_partGrabAction->setChecked(active);}
+        updatePartGrabState();emit stateChanged();
+    });
     connect(m_partGrabAction,&QAction::toggled,this,[this](bool enabled){
         if(enabled&&m_measurementAction)m_measurementAction->setChecked(false);
         m_view->setGrabMode(enabled);updatePartGrabState();emit stateChanged();
@@ -444,16 +498,29 @@ void MainWindow::buildUi()
 #endif
         m_explode->setValue(0);m_view->resetPartPositions();m_view->beginSectionPlanePick();
     });
+    m_randomColorAction=toolbar->addAction(QStringLiteral("全局随机着色"),this,[this]{randomizeColors(QRandomGenerator::global()->generate());});
+    m_randomColorAction->setObjectName("randomizeColors");
+    m_colorMode=new QComboBox; m_colorMode->setObjectName("colorSelectionMode");m_colorMode->addItems({QStringLiteral("选零件"),QStringLiteral("选面")});
+    m_colorMode->setToolTip(QStringLiteral("选择整体零件或单个原始几何面进行着色"));toolbar->addWidget(m_colorMode);
+    connect(m_colorMode,&QComboBox::currentIndexChanged,this,[this](int index){
+        emit viewportPanelsRequested();if(!canChangeAppearance())return;
+        if(index==1){m_transformPanel->cancelPreview();cancelPendingMeasurementForSessionSwitch();}
+        m_view->setFaceColorPicking(index==1);
+    });
+    connect(m_view,&ViewerWidget::faceColorPickingChanged,this,[this](bool active){QSignalBlocker block(m_colorMode);m_colorMode->setCurrentIndex(active?1:0);updateColorActions();});
+    connect(m_view,&ViewerWidget::colorFacesSelectionChanged,this,[this]{updateColorActions();});
+    m_restoreAllColorsAction=new QAction(QStringLiteral("恢复全部原色"),this);m_restoreAllColorsAction->setObjectName("restoreAllColors");
+    connect(m_restoreAllColorsAction,&QAction::triggered,this,[this]{if(canChangeAppearance())commitColors({},QStringLiteral("恢复全部原色"));});
     m_colorAction=toolbar->addAction(QStringLiteral("零件颜色…"),this,&MainWindow::choosePartColor);m_colorAction->setObjectName("setPartColor");
     m_restoreColorAction=new QAction(QStringLiteral("恢复选中零件原色"),this);m_restoreColorAction->setObjectName("restorePartColor");
-    connect(m_restoreColorAction,&QAction::triggered,this,[this]{restorePartColors(m_view->selectedOccurrences());});
+    connect(m_restoreColorAction,&QAction::triggered,this,[this]{if(m_view->faceColorPicking())restoreFaceColors(m_view->selectedColorFaces());else restorePartColors(m_view->selectedOccurrences());});
     m_undoColorAction=new QAction(QStringLiteral("撤销着色"),this);m_undoColorAction->setObjectName("undoPartColor");
     m_redoColorAction=new QAction(QStringLiteral("重做着色"),this);m_redoColorAction->setObjectName("redoPartColor");
     connect(m_undoColorAction,&QAction::triggered,this,[this]{if(canChangeAppearance())m_colorHistory.undo();});
     connect(m_redoColorAction,&QAction::triggered,this,[this]{if(canChangeAppearance())m_colorHistory.redo();});
     connect(&m_colorHistory,&QUndoStack::indexChanged,this,[this]{updateColorActions();});
     viewMenu->addSeparator();viewMenu->addAction(m_colorAction);viewMenu->addAction(m_restoreColorAction);
-    viewMenu->addAction(m_undoColorAction);viewMenu->addAction(m_redoColorAction);updateColorActions();
+    viewMenu->addAction(m_randomColorAction);viewMenu->addAction(m_restoreAllColorsAction);viewMenu->addAction(m_undoColorAction);viewMenu->addAction(m_redoColorAction);updateColorActions();
     const auto scrollable=[](QWidget* content){
         auto scroll=new QScrollArea;scroll->setFrameShape(QFrame::NoFrame);scroll->setWidgetResizable(true);
         scroll->setMinimumSize(0,0);
@@ -742,7 +809,7 @@ void MainWindow::updatePartGrabState()
     m_partGrabAction->setEnabled(enabled);
     if(m_resetPartPositionsButton)m_resetPartPositionsButton->setEnabled(enabled);
     const bool grabbing=m_view->grabMode();
-    if(m_partGrabAction->isChecked()!=grabbing)m_partGrabAction->setChecked(grabbing);
+    if(m_partGrabAction->isChecked()!=grabbing){QSignalBlocker block(m_partGrabAction);m_partGrabAction->setChecked(grabbing);}
     if(m_partGrabHint)m_partGrabHint->setText((grabbing?
         QStringLiteral("抓手开启：左键拖动零件\n松开保留位置；关闭后左键旋转\n"):
         QStringLiteral("抓手关闭：左键旋转\n开启抓手：左键拖动零件并摆放\n"))+
@@ -866,16 +933,6 @@ void MainWindow::showPartAppearanceMenu(int occurrence,const QPoint& globalPosit
             &&self->canChangeAppearance();
     };
     menu->addSeparator();
-    auto preserve=menu->addAction(QStringLiteral("客户外包络：保留原几何"));preserve->setObjectName("preserveEnvelopePart");
-    auto restore=menu->addAction(QStringLiteral("客户外包络：恢复默认处理"));restore->setObjectName("restoreEnvelopePart");
-    for(auto action:{preserve,restore})action->setEnabled(m_placementSceneReady&&!m_busy);
-    const auto setRule=[this,validMenu,occurrence](bool keep){if(!validMenu()||!m_placementSceneReady)return;
-        auto selection=m_currentSelection;if(std::find(selection.begin(),selection.end(),occurrence)==selection.end())selection={occurrence};
-        const auto leaves=envelopeScope(*m_document,selection);auto& rules=m_envelopeOptions.preservedOccurrences;
-        for(int leaf:leaves){rules.erase(std::remove(rules.begin(),rules.end(),leaf),rules.end());if(keep)rules.push_back(leaf);}
-        diagnostic(QStringLiteral("客户外包络：%1 个实例已设为%2（仅当前模型会话有效）。").arg(leaves.size()).arg(keep?QStringLiteral("保留原几何"):QStringLiteral("默认处理")));
-    };
-    connect(preserve,&QAction::triggered,this,[setRule]{setRule(true);});connect(restore,&QAction::triggered,this,[setRule]{setRule(false);});
     const auto validPart=[self,validMenu,occurrence]{
         return validMenu()&&occurrence>=0
             &&size_t(occurrence)<self->m_document->occurrences.size()
@@ -914,6 +971,7 @@ void MainWindow::showPartAppearanceMenu(int occurrence,const QPoint& globalPosit
 
 void MainWindow::setBomPageVisible(bool visible)
 {
+    if(visible)emit viewportPanelsRequested();
     if(!m_pages || (m_pages->currentIndex()==1)==visible)return;
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
     m_view->finishPartDrag();
@@ -1028,12 +1086,11 @@ void MainWindow::commitManualEditor()
 }
 
 QMenu* MainWindow::documentViewMenu() const { return menuBar()->findChild<QMenu*>(QStringLiteral("viewMenu")); }
-QMenu* MainWindow::documentProcessingMenu() const { return menuBar()->findChild<QMenu*>(QStringLiteral("processingMenu")); }
 QMenu* MainWindow::documentHelpMenu() const { return menuBar()->findChild<QMenu*>(QStringLiteral("helpMenu")); }
 
 void MainWindow::cancelPendingMeasurementForSessionSwitch()
 {
-    m_transformPanel->cancelPreview();m_view->cancelSectionPlanePick();
+    m_transformPanel->cancelPreview();m_view->cancelSectionPlanePick();m_view->setFaceColorPicking(false);
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
     if(m_measurementPanel)m_measurementPanel->cancelForSessionSwitch();
 #endif
@@ -1187,7 +1244,7 @@ void MainWindow::beginLoadDocument(const QString& path)
             if(m_embedded){m_importError->setText(QStringLiteral("读取未完成：%1").arg(error));m_importFailure->show();emit stateChanged();return;}
             if(!error.contains(QStringLiteral("取消")))QMessageBox::warning(this,QStringLiteral("导入未完成"),error);return;
         }
-        m_colors.clear();m_savedColors.clear();m_colorHistory.clear();m_envelopeOptions={};
+        m_colors.clear();m_savedColors.clear();m_colorHistory.clear();
         m_document=*document;m_pmi=*pmi;m_transformPanel->setDocument(m_document);populateDocument();
         setBusy(true,QStringLiteral("建立三维显示…"));m_progress->setValue(98);m_view->setDocument(m_document,m_pmi,true);
     });
@@ -1278,6 +1335,8 @@ void MainWindow::showProperties(const std::vector<int>& indices)
 
 void MainWindow::saveBom()
 {
+    if(!prepareDialogWindow([this]{saveBom();}))return;
+    emit viewportPanelsRequested();
     if(!m_document||m_busy)return;
     commitManualEditor();
     if(checkedLeafOccurrences().empty())return;
@@ -1292,9 +1351,18 @@ void MainWindow::updateColorActions()
 {
     if(!m_colorAction)return;
     const bool ready=canChangeAppearance()&&m_placementSceneReady;
-    const auto selected=m_view->selectedOccurrences();
-    m_colorAction->setEnabled(ready&&!selected.empty());
-    m_restoreColorAction->setEnabled(ready&&std::any_of(selected.begin(),selected.end(),[this](int i){return m_colors.count(i)>0;}));
+    const bool face=m_view->faceColorPicking();
+    const auto& faces=m_view->selectedColorFaces();const auto selected=m_view->selectedOccurrences();
+    m_colorAction->setText(face?QStringLiteral("面颜色…"):QStringLiteral("零件颜色…"));
+    m_colorAction->setEnabled(ready&&(face?!faces.empty():!selected.empty()));
+    m_restoreColorAction->setText(face?QStringLiteral("恢复选中面底色"):QStringLiteral("恢复选中零件原色"));
+    m_restoreColorAction->setEnabled(ready&&(face?
+        std::any_of(faces.begin(),faces.end(),[this](const FaceColorKey& f){return m_colors.faces.count(f)>0;}):
+        std::any_of(selected.begin(),selected.end(),[this](int i){return m_colors.count(i)>0||std::any_of(m_colors.faces.begin(),m_colors.faces.end(),[i](const auto& f){return f.first.occurrence==i;});})));
+    if(m_fullscreenButton)m_fullscreenButton->setEnabled(ready);
+    if(m_colorMode)m_colorMode->setEnabled(ready);
+    if(m_randomColorAction)m_randomColorAction->setEnabled(ready);
+    if(m_restoreAllColorsAction)m_restoreAllColorsAction->setEnabled(ready&&!m_colors.empty());
     m_undoColorAction->setEnabled(ready&&m_colorHistory.canUndo());m_redoColorAction->setEnabled(ready&&m_colorHistory.canRedo());
 }
 void MainWindow::commitColors(const ColorEdits& next,const QString& text)
@@ -1316,16 +1384,50 @@ bool MainWindow::setPartColors(const std::vector<int>& indices,const QColor& col
 bool MainWindow::restorePartColors(const std::vector<int>& indices)
 {
     if(!canChangeAppearance()||!m_placementSceneReady)return false;
-    auto next=m_colors;for(int i:indices)next.erase(i);commitColors(next,QStringLiteral("恢复零件原色"));return true;
+    auto next=m_colors;for(int i:indices){next.erase(i);for(auto it=next.faces.begin();it!=next.faces.end();)if(it->first.occurrence==i)it=next.faces.erase(it);else ++it;}
+    commitColors(next,QStringLiteral("恢复零件原色"));return true;
+}
+bool MainWindow::setFaceColors(const std::vector<FaceColorKey>& faces,const QColor& color)
+{
+    if(!canChangeAppearance()||!m_placementSceneReady||!color.isValid()||faces.empty())return false;
+    auto next=m_colors;auto opaque=color.toRgb();opaque.setAlpha(255);
+    for(const auto& key:faces){if(colorFace(*m_document,key).IsNull())return false;next.faces[key]=opaque;}
+    commitColors(next,QStringLiteral("设置面颜色"));return true;
+}
+bool MainWindow::restoreFaceColors(const std::vector<FaceColorKey>& faces)
+{
+    if(!canChangeAppearance()||!m_placementSceneReady)return false;
+    auto next=m_colors;for(const auto& key:faces)next.faces.erase(key);commitColors(next,QStringLiteral("恢复面底色"));return true;
+}
+bool MainWindow::randomizeColors(quint32 seed)
+{
+    if(!canChangeAppearance()||!m_placementSceneReady)return false;
+    emit viewportPanelsRequested();
+    try {commitColors(randomColorsByName(*m_document,m_transformPanel->committedEdits(),seed),QStringLiteral("全局随机着色"));return true;}
+    catch(const Standard_Failure& e){diagnostic(QString::fromUtf8(e.GetMessageString()));return false;}
+    catch(const std::exception& e){diagnostic(QString::fromUtf8(e.what()));return false;}
+}
+bool MainWindow::prepareDialogWindow(const std::function<void()>& retry)
+{
+    emit viewportPanelsRequested();
+    if(window()->property("viewportFullscreenTransitioning").toBool()){
+        QTimer::singleShot(50,this,[this,retry]{if(!m_closePending)retry();});
+        return false;
+    }
+    return true;
 }
 void MainWindow::choosePartColor()
 {
+    if(!prepareDialogWindow([this]{choosePartColor();}))return;
     if(!canChangeAppearance())return;
-    const auto indices=m_view->selectedOccurrences();if(indices.empty())return;
-    const auto document=m_document;
-    const auto color=QColorDialog::getColor(m_view->occurrenceColor(indices.front()),this,QStringLiteral("设置选中零件颜色"));
+    emit viewportPanelsRequested();
+    const auto document=m_document;const bool face=m_view->faceColorPicking();
+    const auto faces=m_view->selectedColorFaces();const auto indices=m_view->selectedOccurrences();
+    if(face?faces.empty():indices.empty())return;
+    QColor initial=face?m_colors.faces.count(faces.front())?m_colors.faces.at(faces.front()):m_view->occurrenceColor(faces.front().occurrence):m_view->occurrenceColor(indices.front());
+    const auto color=QColorDialog::getColor(initial,this,face?QStringLiteral("设置选中面颜色"):QStringLiteral("设置选中零件颜色"));
     if(document!=m_document||!canChangeAppearance()||!color.isValid())return;
-    setPartColors(indices,color);
+    if(face)setFaceColors(faces,color);else setPartColors(indices,color);
 }
 
 bool MainWindow::hasPlacementChanges() const {return (m_transformPanel&&m_transformPanel->isModified())||m_colors!=m_savedColors;}
@@ -1334,26 +1436,15 @@ void MainWindow::updatePlacementActions()
 {
     const bool ready=m_document&&m_placementSceneReady&&!m_busy&&!m_closePending;
     m_transformAction->setEnabled(ready);m_saveAssemblyAction->setEnabled(ready);
-    if(m_envelopeAction)m_envelopeAction->setEnabled(ready);
     if(m_transformPanel)m_transformPanel->setSceneEnabled(ready);
     if(m_sectionPanel)m_sectionPanel->setEnabled(ready);
     if(m_sectionAction)m_sectionAction->setEnabled(ready);
     updateColorActions();
 }
 
-void MainWindow::openCustomerEnvelope()
-{
-    if(!m_envelopeAction->isEnabled())return;
-    m_transformPanel->cancelPreview();m_view->cancelSectionPlanePick();m_view->finishPartDrag();
-    cancelPendingMeasurementForSessionSwitch();
-    // Application-modal snapshot prevents placement/scope edits while a preview is being reviewed.
-    m_envelopeOptions.preservedColors=m_colors;
-    EnvelopeDialog dialog(m_document,m_transformPanel->committedEdits(),m_view->selectedOccurrences(),m_jobs,this,m_envelopeOptions);
-    dialog.exec();m_envelopeOptions=dialog.options();
-}
-
 void MainWindow::openPlacementPanel()
 {
+    emit viewportPanelsRequested();
     if(!m_transformAction->isEnabled())return;
     setBomPageVisible(false);m_view->cancelSectionPlanePick();m_view->finishPartDrag();m_view->setGrabMode(false);
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
@@ -1380,6 +1471,8 @@ bool MainWindow::confirmPlacementClose()
 
 void MainWindow::saveAssembly(bool closeAfter)
 {
+    if(!prepareDialogWindow([this,closeAfter]{saveAssembly(closeAfter);}))return;
+    emit viewportPanelsRequested();
     if(!m_document||m_busy||!m_placementSceneReady)return;
     if(m_transformPanel->hasPreview()){
         QMessageBox::information(this,QStringLiteral("位置预览尚未应用"),QStringLiteral("请先在位置编辑页应用或取消预览，再保存。"));return;
@@ -1403,6 +1496,8 @@ void MainWindow::saveAssembly(bool closeAfter)
 
 void MainWindow::saveParts()
 {
+    if(!prepareDialogWindow([this]{saveParts();}))return;
+    emit viewportPanelsRequested();
     if(!m_document||m_busy)return;
     commitManualEditor();
     if(checkedLeafOccurrences().empty())return;const std::vector<int> selected;

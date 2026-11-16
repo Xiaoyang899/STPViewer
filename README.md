@@ -2,11 +2,11 @@
 
 **面向 Mac 和 Windows 的中文、离线 STEP 工程查看器。**
 
-> 本开发分支新增零件位置编辑、整装 STEP 另存和背景颜色切换。新增功能已在 Linux / Qt 6.8.3 / OCCT 7.9.3 编译并验证；尚未生成或验证本分支的 Windows / macOS 安装包。下文原有平台实测记录属于上游版本。操作方法、验证结果与限制见 [位置编辑说明](doc/placement-editing.md)。
+> **V1.1.00** 改善 Excel 装配树、全局随机着色、单面着色和三维全屏，修复选面后点击空白崩溃，并增加全屏抓手。移除开发分支中未完善的客户外包络实验模块。自 1.0 以来合入的位置编辑、整装 STEP 另存、自定义剖切和背景设置也包含在本版中。详见 [V1.1.00 更新说明](doc/release-v1.1.00.md)、[功能说明](doc/bom-color-fullscreen.md) 和 [验证范围](VALIDATION.md)。
 
 STP Viewer 用于打开 `.stp` / `.step` 文件，查看三维零件与装配、提取工程信息、测量精确几何，并导出 Excel BOM 或拆分零件。文件在本机处理，应用不上传模型、不调用云服务，也不修改源 STEP 文件。
 
-项目基于 [Mayo v0.10.0](https://github.com/fougue/mayo/tree/v0.10.0)，使用 Qt、Open CASCADE Technology 和 libxlsxwriter。当前版本为 **1.0 正式版**，适合工程查看、几何分析与功能验证。
+项目基于 [Mayo v0.10.0](https://github.com/fougue/mayo/tree/v0.10.0)，使用 Qt、Open CASCADE Technology 和 libxlsxwriter。V1.1.00 在 1.0 的离线工程查看与测量功能上继续扩展装配编辑、导出和三维观察。
 
 ![STP Viewer 的测量操作页与多条三维结果](doc/screenshots/measurement.png)
 
@@ -16,24 +16,28 @@ STP Viewer 用于打开 `.stp` / `.step` 文件，查看三维零件与装配、
 - **装配探索**：按总装或子装配爆炸；抓手拖动单个零件实例，松开后保留显示位置，支持复位和每文件独立状态。
 - **零件位置编辑**：工具栏“移动 / 旋转”打开右侧“位置编辑”页；支持按 mm 平移、按角度旋转、预览、应用、撤销及重做，再通过“另存 STEP”保存整个装配。
 - **背景颜色**：视图菜单切换浅色渐变、白色、浅灰、深灰或自定义颜色，设置在下次启动时保留。
+- **模型着色**：全局随机着色按 BOM 名称统一配色，优先提高相邻异名零件的色差；支持选中零件或单个面着色、撤销/重做，并通过整装 STEP 另存保留新颜色。
+- **三维全屏**：视口右下角四角图标切换模型全屏，进入/退出带 180 ms 扩展/收缩动画；全屏抓手位于退出按钮左侧，退出后恢复布局并保留临时摆放。
 - **工程信息**：读取文件中可获得的名称、编号、实例数量、材料和密度，计算包围盒、面积、有效体积及质量；缺失材料与密度可在当前会话补充。
 - **独立测量**：点坐标、长度、半径、直径、面积、体积、质量、质量中心和体积中心。体积中心独立于密度；质量和质量中心要求有效密度。
 - **对象之间测量**：点、边、面、实体、零件及装配汇总的最小距离，提供最近点和 ΔX／ΔY／ΔZ；按切线、法线或特征轴测量 0–90° 小夹角。
 - **圆心、轴线与无限拓展**：拾取圆／圆弧圆心及圆／圆柱／圆锥参考轴；A、B 可分别将解析直线边或平面面无限拓展。轴线天然无限，显示长度不限制计算。
 - **连续测量记录**：成功测量自动追加，操作页与记录页分开；支持复制、单条删除、隐藏标注和清除所有测量。每个文件标签独立保留会话记录。
-- **Excel 与 STEP 导出**：导出四表 `.xlsx` BOM；按勾选实例范围拆分叶级零件，附带清单和诊断。导出使用原始精确几何及装配位置。
+- **Excel 与 STEP 导出**：四表 `.xlsx` 默认打开可展开/收拢的装配树，保留层级序号及完整实例路径；按勾选范围拆分叶级零件并附带清单和诊断。Excel 与拆分导出使用导入数据；整装“另存 STEP”保存已应用的位置和颜色编辑。
 - **PMI 查看**：显示已识别的源图形与可验证的基础语义标注，并列出不支持、关联失败或显示失败的原因。
 
 轴线和无限拓展测量的三维标签省略 M 编号与无穷符号，记录表保留编号。默认单位为 mm、mm²、mm³、kg、度，显示三位小数，可调整至六位。默认使用原始装配位置，也可测量包含爆炸和抓手位移的当前显示位置。
 
-## 平台与便携方式
+## 下载与平台
 
-| 平台 | 构建产物 | 当前实测范围 |
+[V1.1.00 Release](https://github.com/Xiaoyang899/STPViewer/releases/tag/v1.1.00) 提供以下成品；下载后可使用随附的 `SHA256SUMS.txt` 核对文件。
+
+| 平台 | 下载与启动 | 当前验证边界 |
 |---|---|---|
-| macOS Apple Silicon | `STPViewer.app`、arm64 便携 ZIP | Apple Silicon Mac 本机与 Retina，应用及独立解压副本实测 |
-| Windows x64 | 完整目录便携 ZIP、单文件便携 EXE | Windows 10 x64 和 Windows 11 x64 中运行实测通过 |
+| macOS Apple Silicon | [arm64 ZIP](https://github.com/Xiaoyang899/STPViewer/releases/download/v1.1.00/STPViewer-1.1.00-macos-arm64.zip)，完整解压后打开 `STPViewer.app` | 功能基线覆盖 Apple Silicon Mac 本机与 Retina；每个发布包以随附验证报告为准 |
+| Windows x64 | [单文件 EXE](https://github.com/Xiaoyang899/STPViewer/releases/download/v1.1.00/STPViewer-1.1.00-windows-x64-portable.exe) 或 [完整目录 ZIP](https://github.com/Xiaoyang899/STPViewer/releases/download/v1.1.00/STPViewer-1.1.00-windows-x64.zip) | 当前功能回归在 Windows 11 ARM64 VMware 中运行 x64 程序，属于仿真验证，不等同于原生 x64 硬件验收 |
 
-Windows x64 的运行实测由项目作者确认，自动回归环境与验证范围详见 [验证说明](VALIDATION.md)。
+另提供 [源码 ZIP](https://github.com/Xiaoyang899/STPViewer/releases/download/v1.1.00/STPViewer-1.1.00-source.zip) 和 [SHA-256 校验汇总](https://github.com/Xiaoyang899/STPViewer/releases/download/v1.1.00/SHA256SUMS.txt)。Mac／Windows 的具体构建、交互与便携包验证结果以同次发布的报告为准，历史 1.0 平台记录不自动继承为 V1.1.00 的验收结果，详见 [验证说明](VALIDATION.md)。
 
 Windows 单文件 EXE 可独立复制。首次启动将内嵌、校验后的运行库展开至 `%LOCALAPPDATA%\STPViewer\Portable\<包哈希>`，后续校验并复用缓存；无需管理员权限，不联网。它使用 .NET Framework 4.x 启动器，运行时使用展开后的 Qt／OCCT DLL 和资源。
 
@@ -62,7 +66,7 @@ export PATH="$PWD/.tools/venv/bin:$PATH"
 cmake -C .deps/paths.cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 -DSTP_BUILD_TESTS=ON
-cmake --build build --target STPViewer stp_core_tests stp_measurement_tests stp_pmi_tests stp_job_queue_tests stp_placement_tests stp_transform_panel_tests --parallel 6
+cmake --build build --target STPViewer stp_core_tests stp_measurement_tests stp_pmi_tests stp_job_queue_tests stp_placement_tests stp_transform_panel_tests stp_section_color_tests stp_bom_outline_tests stp_color_edit_tests --parallel 6
 ctest --test-dir build --output-on-failure
 bash scripts/package-macos.sh build/STPViewer.app
 ```
@@ -79,7 +83,9 @@ bash scripts/package-macos.sh build/STPViewer.app
 
 ## 文档与样例
 
+- [V1.1.00 更新说明](doc/release-v1.1.00.md)
 - [完整使用说明](STP_README.md)
+- [Excel 装配树、模型着色与三维全屏](doc/bom-color-fullscreen.md)（含外包络移除及保存范围）
 - [工程测量说明](doc/stp_mac_measurement.md)（保留原文件名，Mac／Windows 均适用）
 - [Windows 测量与单文件 EXE](doc/stp_windows_measurement.md)
 - [抓手摆放说明](doc/stp_mac_part_grab.md)

@@ -66,6 +66,10 @@ public:
     bool sectionPicking() const { return m_sectionPicking; }
     void setColorEdits(const ColorEdits&);
     QColor occurrenceColor(int index) const;
+    void setFaceColorPicking(bool enabled);
+    bool faceColorPicking() const { return m_faceColorPicking; }
+    const ColorFaceSelection& selectedColorFaces() const { return m_selectedColorFaces; }
+    void clearColorFaceSelection();
     void setExplosion(int percent, int scope);
     void setGrabMode(bool enabled);
     bool grabMode() const { return m_grabMode; }
@@ -113,6 +117,9 @@ signals:
     void measurementPositionsChanged();
     void sectionPlanePicked(const gp_Pln&, const gp_Pnt&, const QString&);
     void sectionPickingChanged(bool active);
+    void colorFacesSelectionChanged(const Stp::ColorFaceSelection& faces);
+    void faceColorPickingChanged(bool active);
+    void grabModeChanged(bool active);
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void showEvent(QShowEvent* event) override;
@@ -148,7 +155,9 @@ private:
     bool partDragPoint(const QPoint& position, gp_Pnt& point) const;
     void updateGrabCursor();
     void applyTransparency();
-    void applyItemStyle(Item&);
+    void applyItemStyle(Item&, bool reset = false);
+    bool pickColorFace(const QPoint&, bool toggle);
+    void refreshColorFaceHighlights();
     void applySection();
     bool itemDisplayed(const Item& item) const;
     void applyItemVisibility(const Item& item);
@@ -170,6 +179,9 @@ private:
     std::shared_ptr<CadDocument> m_document;
     PlacementEdits m_placementEdits;
     ColorEdits m_colorEdits;
+    bool m_faceColorPicking = false;
+    ColorFaceSelection m_selectedColorFaces;
+    std::vector<Handle(AIS_InteractiveObject)> m_colorFaceHighlights;
     SectionState m_section;
     bool m_sectionPicking = false;
     Handle(AIS_Shape) m_sectionGuide;

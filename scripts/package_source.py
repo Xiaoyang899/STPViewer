@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    folder = "STPViewer-1.0.0-source"
+    folder = "STPViewer-1.1.00-source"
     destination = args.output / (folder + ".zip")
     manifest = []
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:

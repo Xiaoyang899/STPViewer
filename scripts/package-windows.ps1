@@ -10,16 +10,22 @@ if (-not $Output) { $Output = Join-Path $Root 'dist' }
 if (-not $DependencyPrefix) { $DependencyPrefix = Join-Path $Root '.deps/install' }
 $Output = [System.IO.Path]::GetFullPath($Output)
 $PackageReportPath = Join-Path $Output 'windows-bundle-validation.json'
-Write-StpJson $PackageReportPath @{ schema=1; status='running'; started_utc=[DateTime]::UtcNow.ToString('o'); architecture='x64' }
+Write-StpJson $PackageReportPath @{ schema=1; version='1.1.00'; status='running'; started_utc=[DateTime]::UtcNow.ToString('o'); architecture='x64' }
 try {
 $MachineEnvironment = Get-StpMachineEnvironment
 Initialize-StpMsvc
 $Exe = Get-Item -LiteralPath $Executable
+$VersionInfo = $Exe.VersionInfo
+if ($VersionInfo.FileVersion -ne '1.1.00' -or $VersionInfo.ProductVersion -ne '1.1.00' -or
+    $VersionInfo.FileMajorPart -ne 1 -or $VersionInfo.FileMinorPart -ne 1 -or
+    $VersionInfo.FileBuildPart -ne 0 -or $VersionInfo.FilePrivatePart -ne 0) {
+    throw 'The Windows application version resource does not match 1.1.00 (1.1.0.0).'
+}
 $Lock = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'dependencies.lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $Qt = Join-Path $Root ".deps/qt/$($Lock.qt.version)/msvc2022_64"
 $Validation = Join-Path $Output 'validation/windows/package'
 New-Item -ItemType Directory -Path $Validation -Force | Out-Null
-$Stage = Join-Path $Output 'STPViewer-1.0.0-windows-x64'
+$Stage = Join-Path $Output 'STPViewer-1.1.00-windows-x64'
 if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force }
 New-Item $Stage -ItemType Directory -Force | Out-Null
 Copy-Item -LiteralPath $Exe.FullName -Destination $Stage
@@ -53,7 +59,7 @@ foreach ($Name in @('LICENSE.txt', 'THIRD_PARTY_NOTICES.md', 'STP_README.md', 'V
     Copy-Item $Path $Stage
 }
 New-Item (Join-Path $Stage 'doc') -ItemType Directory -Force | Out-Null
-foreach ($Name in @('stp_mac_measurement.md','stp_mac_part_grab.md','stp_windows_measurement.md','placement-editing.md','section-color-editing.md','customer-envelope.md')) { Copy-Item (Join-Path $Root "doc/$Name") (Join-Path $Stage 'doc') }
+foreach ($Name in @('stp_mac_measurement.md','stp_mac_part_grab.md','stp_windows_measurement.md','placement-editing.md','section-color-editing.md','bom-color-fullscreen.md','release-v1.1.00.md')) { Copy-Item (Join-Path $Root "doc/$Name") (Join-Path $Stage 'doc') }
 New-Item (Join-Path $Stage 'samples') -ItemType Directory -Force | Out-Null
 Copy-Item (Join-Path $Root 'tests/inputs/cube.step') (Join-Path $Stage 'samples/cube.step')
 if (Test-Path (Join-Path $Root 'samples')) {
@@ -71,7 +77,7 @@ New-Item (Join-Path $Stage 'translations') -ItemType Directory -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $Root 'resources/translations') | Copy-Item -Destination (Join-Path $Stage 'translations') -Recurse -Force
 if (-not (Test-Path -LiteralPath (Join-Path $Stage 'translations/qtbase_zh_CN.qm'))) { throw 'Required bundled Qt Chinese translation is missing.' }
 "[Paths]`nPrefix = .`nPlugins = .`nTranslations = translations`n" | Set-Content (Join-Path $Stage 'qt.conf') -Encoding ascii
-$Archive = Join-Path $Output 'STPViewer-1.0.0-windows-x64.zip'
+$Archive = Join-Path $Output 'STPViewer-1.1.00-windows-x64.zip'
 # Audit PE machine type and recursive imported DLL closure before release.
 $Dumpbin = (Get-Command dumpbin.exe -ErrorAction Stop).Source
 $PeFiles = Get-ChildItem -LiteralPath $Stage -Recurse -File | Where-Object { $_.Extension -in @('.exe', '.dll') }
@@ -170,14 +176,15 @@ try {
 $Hash = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
 "$Hash  $(Split-Path $Archive -Leaf)" | Set-Content "$Archive.sha256" -Encoding ascii
 Write-StpJson (Join-Path $Output 'windows-bundle-validation.json') ([ordered]@{
-    schema=1; status='passed'; archive=(Split-Path $Archive -Leaf); sha256=$Hash; bytes=(Get-Item -LiteralPath $Archive).Length;
+    schema=1; version='1.1.00'; status='passed'; archive=(Split-Path $Archive -Leaf); sha256=$Hash; bytes=(Get-Item -LiteralPath $Archive).Length;
     architecture='x64'; environment=$MachineEnvironment;
+    version_info=@{ file=$VersionInfo.FileVersion; product=$VersionInfo.ProductVersion; numeric='1.1.0.0' };
     relocated=$true; signed=$false; developer_environment_cleared=$true; pe_inventory=$PeInventory; smoke_tests=$SmokeResults; temporary_cleanup=$Cleanup;
     completed_utc=[DateTime]::UtcNow.ToString('o'); dependency_versions=$Lock; crt_source=$Crt.Name;
     limitations=@('Ad-hoc build-host relocation only; separate clean Windows and minimum Windows version still require validation.', 'ARM64-host x64 emulation, if used, does not prove native x64 hardware or native ARM64 support.')
 })
 Write-Output $Archive
 } catch {
-    Write-StpJson $PackageReportPath @{ schema=1; status='failed'; architecture='x64'; completed_utc=[DateTime]::UtcNow.ToString('o'); error=$_.Exception.Message }
+    Write-StpJson $PackageReportPath @{ schema=1; version='1.1.00'; status='failed'; architecture='x64'; completed_utc=[DateTime]::UtcNow.ToString('o'); error=$_.Exception.Message }
     throw
 }

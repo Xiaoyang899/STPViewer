@@ -1,3 +1,5 @@
+#include <QLineEdit>
+#include <QFileInfo>
 #include "main_window.h"
 #include "document_workspace.h"
 #include "part_transform_panel.h"
@@ -82,7 +84,7 @@ int main(int argc,char** argv){
         workspace.closeDocument(first);require(workspace.documentCount()==2,"cancelled close discarded edited document");
         const auto savedPath=settings.filePath("edited.stp");
         QTimer::singleShot(0,[&]{for(auto widget:QApplication::topLevelWidgets())if(auto dialog=qobject_cast<QFileDialog*>(widget)){
-            dialog->selectFile(savedPath);QMetaObject::invokeMethod(dialog,"accept",Qt::DirectConnection);}});
+            dialog->selectFile(savedPath);if(auto edit=dialog->findChild<QLineEdit*>("fileNameEdit"))edit->setText(QFileInfo(savedPath).fileName());require(dialog->selectedFiles().value(0)==savedPath,"save dialog selected wrong path");QMetaObject::invokeMethod(dialog,"accept",Qt::DirectConnection);}});
         workspace.findChild<QAction*>("workspaceSaveAssembly")->trigger();
         waitFor([&]{return QFile::exists(savedPath)&&!first->isBusy()&&!first->hasPlacementChanges();});
         std::atomic_bool cancel(false);const auto saved=Stp::loadStep(savedPath,{},cancel);

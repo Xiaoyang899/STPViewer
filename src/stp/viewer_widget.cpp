@@ -442,6 +442,8 @@ void ViewerWidget::stopSceneTimers()
 void ViewerWidget::requestSessionClose()
 {
     if (m_sessionClosing) return;
+    setFaceColorPicking(false);
+    setGrabMode(false);
     setMeasurementPicking(false, m_measurementSelection, m_measurementSlot);
     finishPartDrag();
     m_sessionClosing = true;
@@ -462,6 +464,8 @@ void ViewerWidget::requestSessionClose()
 
 void ViewerWidget::clearDocument()
 {
+    setFaceColorPicking(false);
+    setGrabMode(false);
     m_placementEdits.clear();
     setMeasurementPicking(false, m_measurementSelection, m_measurementSlot);
     clearMeasurementRecords();
@@ -482,6 +486,7 @@ void ViewerWidget::clearDocument()
     m_selectionTransparency = false;
     m_instanceTransparency.clear(); m_temporarilyHidden.clear();
     m_clip->SetOn(false);
+    setFaceColorPicking(false);clearColorFaceSelection();
     m_section=SectionState{};m_colorEdits.clear();m_sectionPicking=false;
     if(!m_sectionGuide.IsNull()){m_context->Remove(m_sectionGuide,false);m_sectionGuide.Nullify();}
     redraw();
@@ -711,6 +716,7 @@ int ViewerWidget::effectiveOccurrenceTransparency(int index) const
 
 void ViewerWidget::selectOccurrences(const std::vector<int>& indices)
 {
+    if(m_faceColorPicking)setFaceColorPicking(false);
     m_selected = leafIndices(indices);
     m_context->ClearSelected(false);
     for (const auto& item : m_items) {
@@ -769,12 +775,13 @@ QColor ViewerWidget::occurrenceColor(int index) const
     return it!=m_colorEdits.end()?it->second:m_document?occurrenceBaseColor(*m_document,index):QColor("#cccccc");
 }
 
-void ViewerWidget::applyItemStyle(Item& item)
+void ViewerWidget::applyItemStyle(Item& item,bool reset)
 {
     auto object=Handle(XCAFPrs_AISObject)::DownCast(item.object);
     if(object.IsNull())return;
     const auto color=m_colorEdits.find(item.occurrence);
-    if(color==m_colorEdits.end()&&item.colorOverridden){
+    const bool hasFaces=std::any_of(m_colorEdits.faces.begin(),m_colorEdits.faces.end(),[&](const auto& e){return e.first.occurrence==item.occurrence;});
+    if((reset||(color==m_colorEdits.end()&&!hasFaces))&&item.colorOverridden){
         // UnsetColor/UnsetMaterial would reset imported instance styles to AIS
         // defaults. Recreate only this presentation from its immutable XDE label.
         const bool displayed=m_context->IsDisplayed(object);
@@ -798,6 +805,12 @@ void ViewerWidget::applyItemStyle(Item& item)
         // restoring alpha after a temporary transparency command.
         object->UnsetTransparency();object->DispatchStyles(false);
     }
+    for(const auto& [key,c]:m_colorEdits.faces)if(key.occurrence==item.occurrence){
+        const auto face=colorFace(*m_document,key);
+        const auto local=XCAFDoc_ShapeTool::GetLocation(m_document->occurrences[size_t(item.occurrence)].label);
+        object->SetCustomColor(face.Moved(local),Quantity_Color(c.redF(),c.greenF(),c.blueF(),Quantity_TOC_sRGB));
+        item.colorOverridden=true;
+    }
     if(item.transparency>0)object->SetTransparency(item.transparency/100.);
     m_context->Redisplay(object,false);
 }
@@ -809,10 +822,72 @@ void ViewerWidget::setColorEdits(const ColorEdits& colors)
     const auto previous=m_colorEdits;m_colorEdits=colors;
     for(auto& item:m_items){
         const auto old=previous.find(item.occurrence),now=colors.find(item.occurrence);
-        if((old==previous.end())!=(now==colors.end())
-            ||(old!=previous.end()&&now!=colors.end()&&old->second!=now->second))applyItemStyle(item);
+        const bool changed=(old==previous.end())!=(now==colors.end())
+            ||(old!=previous.end()&&now!=colors.end()&&old->second!=now->second);
+        const auto faceSubset=[&](const FaceColorEdits& values){FaceColorEdits result;for(const auto& e:values)if(e.first.occurrence==item.occurrence)result.insert(e);return result;};
+        if(changed||faceSubset(previous.faces)!=faceSubset(colors.faces))applyItemStyle(item,true);
     }
-    applySection();applyMeasurementSelectionModes();selectOccurrences(m_selected);redraw();
+    applySection();applyMeasurementSelectionModes();
+    if(m_faceColorPicking)refreshColorFaceHighlights();else selectOccurrences(m_selected);
+    redraw();
+}
+
+void ViewerWidget::clearColorFaceSelection() {
+    m_selectedColorFaces.clear();refreshColorFaceHighlights();emit colorFacesSelectionChanged(m_selectedColorFaces);
+}
+void ViewerWidget::setFaceColorPicking(bool enabled) {
+    enabled=enabled&&!m_sessionClosing&&bool(m_document)&&!m_building;
+    if(enabled==m_faceColorPicking)return;
+    if(enabled){cancelSectionPlanePick();setMeasurementPicking(false,m_measurementSelection,m_measurementSlot);setGrabMode(false);finishPartDrag();}
+    m_faceColorPicking=enabled;clearColorFaceSelection();
+    m_context->ClearSelected(false);applyMeasurementSelectionModes();
+    if(!enabled&&!m_building&&!m_sessionClosing)selectOccurrences(m_selected);
+    emit faceColorPickingChanged(enabled);redraw();
+}
+void ViewerWidget::refreshColorFaceHighlights() {
+    for(const auto& object:m_colorFaceHighlights)m_context->Remove(object,false);m_colorFaceHighlights.clear();
+    if(!m_faceColorPicking||m_building||!m_document||m_sessionClosing)return;
+    for(const auto& key:m_selectedColorFaces){if(!isOccurrenceDisplayed(key.occurrence))continue;const auto face=colorFace(*m_document,key);if(face.IsNull())continue;
+        Handle(AIS_Shape) object=new AIS_Shape(face.Moved(TopLoc_Location(occurrenceDisplayTransform(key.occurrence))));
+        object->SetColor(Quantity_NOC_CYAN1);object->SetWidth(3.);object->SetZLayer(Graphic3d_ZLayerId_Topmost);
+        m_context->Display(object,AIS_WireFrame,-1,false);m_context->Deactivate(object);m_colorFaceHighlights.push_back(object);
+    }
+}
+bool ViewerWidget::pickColorFace(const QPoint& position,bool toggle) {
+    if(!m_faceColorPicking||!m_document||m_building||m_sessionClosing)return false;
+    const auto noHit=[&]{
+        if(!toggle)clearColorFaceSelection();
+        redraw();return false;
+    };
+    m_context->MoveTo(position.x(),position.y(),m_view,false);
+    // DetectedInteractive() dereferences OCCT's last owner unconditionally.
+    // MoveTo() legitimately clears that owner over the background. Guard first,
+    // then retain our own strong owner/object handles for this complete pick.
+    if(!m_context->HasDetected())return noHit();
+    const auto detectedOwner=m_context->DetectedOwner();
+    if(detectedOwner.IsNull()||!detectedOwner->HasSelectable())return noHit();
+    const auto detected=Handle(AIS_InteractiveObject)::DownCast(detectedOwner->Selectable());
+    const auto owner=Handle(StdSelect_BRepOwner)::DownCast(detectedOwner);
+    if(detected.IsNull()||owner.IsNull()||!owner->HasShape()
+        ||owner->Shape().IsNull()||owner->Shape().ShapeType()!=TopAbs_FACE)return noHit();
+    for(const auto& item:m_items){
+        if(item.object!=detected||!itemDisplayed(item))continue;
+        const auto entity=measurementPartEntity(item.occurrence);
+        if(entity.shape.IsNull())return noHit();
+        const auto local=owner->Shape().Moved(owner->Location()).Moved(TopLoc_Location(entity.displayTransform.Inverted()));
+        TopTools_IndexedMapOfShape faces;TopExp::MapShapes(entity.shape,TopAbs_FACE,faces);
+        int number=0;
+        for(int i=1;i<=faces.Extent();++i)
+            if(faces(i).IsPartner(local)&&sameTransform(faces(i).Location().Transformation(),local.Location().Transformation())){number=i;break;}
+        if(!number){emit message(QStringLiteral("无法确认所选面的实例，请重新选择。"));return noHit();}
+        const FaceColorKey key{item.occurrence,number};
+        const auto found=std::find(m_selectedColorFaces.begin(),m_selectedColorFaces.end(),key);
+        if(!toggle)m_selectedColorFaces={key};
+        else if(found==m_selectedColorFaces.end())m_selectedColorFaces.push_back(key);
+        else m_selectedColorFaces.erase(found);
+        refreshColorFaceHighlights();emit colorFacesSelectionChanged(m_selectedColorFaces);redraw();return true;
+    }
+    return noHit();
 }
 
 void ViewerWidget::applyTransparency()
@@ -877,6 +952,7 @@ void ViewerWidget::applySection()
 
 void ViewerWidget::beginSectionPlanePick()
 {
+    setFaceColorPicking(false);
     if(m_building||m_sessionClosing||!m_document)return;
     setMeasurementPicking(true,MeasurementSelection::Face);
     m_sectionPicking=true;applySection();emit sectionPickingChanged(true);redraw();
@@ -930,11 +1006,14 @@ void ViewerWidget::finishPartDrag()
 void ViewerWidget::setGrabMode(bool enabled)
 {
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
-    if(enabled)cancelSectionPlanePick();
+    if(enabled){setFaceColorPicking(false);cancelSectionPlanePick();}
     if (enabled && m_measurementPicking) setMeasurementPicking(false, m_measurementSelection, m_measurementSlot);
     finishPartDrag();
-    m_grabMode = enabled && !m_sessionClosing;
+    const bool next=enabled&&!m_sessionClosing;
+    const bool changed=next!=m_grabMode;
+    m_grabMode=next;
     updateGrabCursor();
+    if(changed)emit grabModeChanged(next);
 #else
     Q_UNUSED(enabled);
 #endif
@@ -971,6 +1050,7 @@ void ViewerWidget::applyMeasurementSelectionModes()
     if (m_sessionClosing || m_building) return;
     for (const auto& item : m_items) {
         m_context->Deactivate(item.object);
+        if(m_faceColorPicking){m_context->Activate(item.object,AIS_Shape::SelectionMode(TopAbs_FACE),false);continue;}
         if (!m_measurementPicking) { m_context->Activate(item.object, 0, false); continue; }
         switch (m_measurementSelection) {
         case MeasurementSelection::Vertex: m_context->Activate(item.object, AIS_Shape::SelectionMode(TopAbs_VERTEX), false); break;
@@ -991,6 +1071,7 @@ void ViewerWidget::applyMeasurementSelectionModes()
 
 void ViewerWidget::setMeasurementPicking(bool enabled, MeasurementSelection type, int slot)
 {
+    if(enabled&&m_faceColorPicking)setFaceColorPicking(false);
     if(enabled&&m_sectionPicking)cancelSectionPlanePick();
     finishPartDrag();
     if (enabled) setGrabMode(false);
@@ -1586,7 +1667,7 @@ void ViewerWidget::completeMeshWork(int generation, int quality,
                 m_context->Display(object, m_displayMode == 2 ? AIS_WireFrame : AIS_Shaded, 0, false);
                 if (original.transparency > 0) m_context->SetTransparency(object, original.transparency / 100.0, false);
                 m_context->Erase(object, false);
-                auto replacement = original; replacement.object = object;
+                auto replacement = original; replacement.object = object;replacement.colorOverridden=false;
                 applyItemStyle(replacement);
                 m_pendingItems.push_back(std::move(replacement));
             } catch (const Standard_Failure& failure) {
@@ -1635,7 +1716,7 @@ void ViewerWidget::finishMeshQuality(bool commit, int quality)
     }
     m_meshSnapshot.clear();
     m_building = false; m_meshChanging = false; m_meshCancel.reset();
-    applySection();applyMeasurementSelectionModes(); updateMeasurementPresentations();
+    applySection();applyMeasurementSelectionModes(); updateMeasurementPresentations();refreshColorFaceHighlights();
     m_surface->widget()->setUpdatesEnabled(true); redraw();
     if (commit) emit meshQualityFinished(m_meshQuality);
     else emit meshQualityCancelled(m_meshQuality);
@@ -1651,6 +1732,7 @@ bool ViewerWidget::saveScreenshot(const QString& filename)
 bool ViewerWidget::eventFilter(QObject* watched, QEvent* event)
 {
     if (watched!=m_surface->widget()) return QWidget::eventFilter(watched,event);
+    if(event->type()==QEvent::KeyPress&&static_cast<QKeyEvent*>(event)->key()==Qt::Key_Escape&&m_faceColorPicking){setFaceColorPicking(false);return true;}
     if(event->type()==QEvent::KeyPress&&static_cast<QKeyEvent*>(event)->key()==Qt::Key_Escape&&m_sectionPicking){cancelSectionPlanePick();return true;}
     if (event->type() == QEvent::DevicePixelRatioChange) {
         for (const auto& [id, overlay] : m_measurementOverlays) {
@@ -1750,6 +1832,7 @@ bool ViewerWidget::eventFilter(QObject* watched, QEvent* event)
             return true;
         }
         if (m_button==Qt::LeftButton && !m_dragged) {
+            if(m_faceColorPicking){pickColorFace(pos,mouse->modifiers().testFlag(Qt::ControlModifier)||mouse->modifiers().testFlag(Qt::MetaModifier));m_button=Qt::NoButton;return true;}
             if (m_measurementPicking) {
                 pickMeasurementEntity(pos); m_button = Qt::NoButton; return true;
             }

@@ -14,7 +14,7 @@ endif()
 add_library(stp_core STATIC
     src/stp/cad_document.cpp src/stp/bom_export.cpp src/stp/part_export.cpp src/stp/pmi.cpp
     src/stp/measurement.cpp src/stp/part_placement.cpp src/stp/assembly_export.cpp
-    src/stp/color_edits.cpp src/stp/section_state.cpp src/stp/customer_envelope.cpp src/stp/envelope_input.cpp)
+    src/stp/color_edits.cpp src/stp/section_state.cpp)
 target_include_directories(stp_core PUBLIC src src/stp "${OpenCASCADE_INCLUDE_DIR}")
 target_link_libraries(stp_core PUBLIC Qt6::Core Qt6::Gui STP::xlsxwriter
     TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKPrim TKMesh
@@ -26,7 +26,7 @@ if(MSVC)
 endif()
 
 add_library(stp_view STATIC
-    src/stp/envelope_dialog.cpp src/stp/envelope_dialog.h
+    src/stp/fullscreen_button.cpp src/stp/fullscreen_button.h
     src/stp/part_transform_panel.cpp src/stp/part_transform_panel.h
     src/stp/section_panel.cpp src/stp/section_panel.h
     src/stp/viewer_widget.cpp src/stp/viewer_widget.h
@@ -49,8 +49,8 @@ set_target_properties(STPViewer PROPERTIES
     AUTOMOC ON
     MACOSX_BUNDLE_BUNDLE_NAME "STP Viewer"
     MACOSX_BUNDLE_GUI_IDENTIFIER "local.stpviewer.desktop"
-    MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0")
+    MACOSX_BUNDLE_BUNDLE_VERSION "1.1.00"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.1.00")
 if(APPLE)
     set(_stp_app_icon "${PROJECT_SOURCE_DIR}/images/stpviewer-aeme.icns")
     set_source_files_properties("${_stp_app_icon}" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
@@ -59,29 +59,71 @@ if(APPLE)
     set_target_properties(STPViewer PROPERTIES AUTORCC ON)
     set_target_properties(STPViewer PROPERTIES MACOSX_BUNDLE_ICON_FILE "stpviewer-aeme.icns")
     enable_language(OBJCXX)
-    target_sources(stp_view PRIVATE src/stp/mac_accessibility.mm src/stp/mac_accessibility.h)
+    target_sources(stp_view PRIVATE src/stp/mac_accessibility.mm src/stp/mac_accessibility.h src/stp/mac_fullscreen_observer.mm)
     target_link_libraries(stp_view PRIVATE Qt6::GuiPrivate "-framework AppKit")
     target_compile_definitions(STPViewer PRIVATE GL_SILENCE_DEPRECATION)
     target_compile_definitions(stp_view PRIVATE GL_SILENCE_DEPRECATION)
 endif()
 if(WIN32)
     enable_language(RC)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/stp_version.rc" [=[
+#include <winver.h>
+1 VERSIONINFO
+ FILEVERSION 1,1,0,0
+ PRODUCTVERSION 1,1,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "STP Viewer\0"
+            VALUE "FileVersion", "1.1.00\0"
+            VALUE "InternalName", "STPViewer\0"
+            VALUE "OriginalFilename", "STPViewer.exe\0"
+            VALUE "ProductName", "STP Viewer\0"
+            VALUE "ProductVersion", "1.1.00\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+]=])
+    target_sources(STPViewer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/stp_version.rc")
     target_sources(STPViewer PRIVATE images/stpviewer-aeme.rc resources/stp_icon.qrc resources/stp_grab_icons.qrc)
     set_target_properties(STPViewer PROPERTIES AUTORCC ON)
     target_include_directories(STPViewer PRIVATE images)
 endif()
 if(STP_BUILD_TESTS)
     enable_testing()
-    add_executable(stp_envelope_tests tests/stp_envelope_tests.cpp)
-    target_link_libraries(stp_envelope_tests PRIVATE stp_core)
-    add_test(NAME stp_envelope_tests COMMAND stp_envelope_tests)
-    add_executable(stp_envelope_integration_tests EXCLUDE_FROM_ALL
-        tests/stp_envelope_integration_tests.cpp src/stp/main_window.cpp src/stp/main_window.h
-        src/stp/document_workspace.cpp src/stp/document_workspace.h resources/stp_grab_icons.qrc)
-    target_link_libraries(stp_envelope_integration_tests PRIVATE stp_view Qt6::Test)
-    target_include_directories(stp_envelope_integration_tests PRIVATE src "${CMAKE_BINARY_DIR}")
-    target_compile_definitions(stp_envelope_integration_tests PRIVATE STP_OCCT_RESOURCE_DIR="${STP_DEPS_PREFIX}/share/opencascade/resources")
-    set_target_properties(stp_envelope_integration_tests PROPERTIES AUTOMOC ON AUTORCC ON)
+    add_executable(stp_main_color_tests EXCLUDE_FROM_ALL tests/stp_main_color_tests.cpp
+        src/stp/main_window.cpp src/stp/main_window.h src/stp/document_workspace.cpp src/stp/document_workspace.h resources/stp_grab_icons.qrc)
+    target_link_libraries(stp_main_color_tests PRIVATE stp_view Qt6::Test)
+    target_include_directories(stp_main_color_tests PRIVATE src "${CMAKE_BINARY_DIR}")
+    target_compile_definitions(stp_main_color_tests PRIVATE STP_OCCT_RESOURCE_DIR="${STP_DEPS_PREFIX}/share/opencascade/resources")
+    set_target_properties(stp_main_color_tests PROPERTIES AUTOMOC ON AUTORCC ON)
+    add_executable(stp_fullscreen_tests EXCLUDE_FROM_ALL tests/stp_fullscreen_tests.cpp
+        src/stp/main_window.cpp src/stp/main_window.h src/stp/document_workspace.cpp src/stp/document_workspace.h resources/stp_grab_icons.qrc)
+    target_link_libraries(stp_fullscreen_tests PRIVATE stp_view Qt6::Test)
+    target_include_directories(stp_fullscreen_tests PRIVATE src "${CMAKE_BINARY_DIR}")
+    target_compile_definitions(stp_fullscreen_tests PRIVATE STP_OCCT_RESOURCE_DIR="${STP_DEPS_PREFIX}/share/opencascade/resources")
+    set_target_properties(stp_fullscreen_tests PROPERTIES AUTOMOC ON AUTORCC ON)
+
+    add_executable(stp_bom_outline_tests tests/stp_bom_outline_tests.cpp)
+    target_link_libraries(stp_bom_outline_tests PRIVATE stp_core ZLIB::ZLIB)
+    add_test(NAME stp_bom_outline_tests COMMAND stp_bom_outline_tests)
+    add_executable(stp_color_edit_integration_tests EXCLUDE_FROM_ALL tests/stp_color_edit_integration_tests.cpp)
+    target_link_libraries(stp_color_edit_integration_tests PRIVATE stp_view Qt6::Test)
+    target_compile_definitions(stp_color_edit_integration_tests PRIVATE STP_OCCT_RESOURCE_DIR="${STP_DEPS_PREFIX}/share/opencascade/resources")
+    add_executable(stp_color_edit_tests tests/stp_color_edit_tests.cpp)
+    target_link_libraries(stp_color_edit_tests PRIVATE stp_core)
+    add_test(NAME stp_color_edit_tests COMMAND stp_color_edit_tests)
     add_executable(stp_section_color_tests tests/stp_section_color_tests.cpp)
     target_link_libraries(stp_section_color_tests PRIVATE stp_core)
     add_test(NAME stp_section_color_tests COMMAND stp_section_color_tests)

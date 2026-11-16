@@ -1,3 +1,5 @@
+#include <QLineEdit>
+#include <QFileInfo>
 #include "stp/document_workspace.h"
 #include "stp/main_window.h"
 #include "stp/viewer_widget.h"
@@ -135,7 +137,7 @@ int main(int argc,char** argv){
         select(window,red);window->findChild<QAction*>("editPlacement")->trigger();auto placement=window->findChild<Stp::PartTransformPanel*>();
         placement->findChild<QDoubleSpinBox*>("placementTranslation0")->setValue(5);placement->findChild<QPushButton*>("applyPlacement")->click();
         const auto destination=temporary.filePath(QStringLiteral("完整几何 新颜色.stp"));
-        QTimer::singleShot(0,[&]{for(auto w:QApplication::topLevelWidgets())if(auto d=qobject_cast<QFileDialog*>(w)){d->selectFile(destination);QMetaObject::invokeMethod(d,"accept",Qt::DirectConnection);}});
+        QTimer::singleShot(0,[&]{for(auto w:QApplication::topLevelWidgets())if(auto d=qobject_cast<QFileDialog*>(w)){d->selectFile(destination);if(auto edit=d->findChild<QLineEdit*>("fileNameEdit"))edit->setText(QFileInfo(destination).fileName());require(d->selectedFiles().value(0)==destination,"save dialog selected wrong path");QMetaObject::invokeMethod(d,"accept",Qt::DirectConnection);}});
         workspace.findChild<QAction*>("workspaceSaveAssembly")->trigger();waitFor([&]{return QFile::exists(destination)&&!window->isBusy()&&!window->hasPlacementChanges();});
         std::atomic_bool cancel(false);auto loaded=Stp::loadStep(destination,{},cancel);const int back=leaf(*loaded,"/Red");
         require(Stp::occurrenceBaseColor(*loaded,back)==QColor("#e09010"),"saved color roundtrip");
